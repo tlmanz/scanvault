@@ -1,0 +1,162 @@
+{
+  "info": {
+    "_postman_id": "8d8b4cdb-0bfd-4526-b9c3-40f4cb15d8e0",
+    "name": "ScanVault API",
+    "description": "Collection for ScanVault endpoints. Set baseUrl and run Create Scan first to auto-populate scanId.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "image",
+      "value": "nginx"
+    },
+    {
+      "key": "tag",
+      "value": "1.25"
+    },
+    {
+      "key": "severity",
+      "value": "CRITICAL"
+    },
+    {
+      "key": "pkg",
+      "value": "openssl"
+    },
+    {
+      "key": "scanId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/health",
+        "description": "Service health check"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scans",
+      "item": [
+        {
+          "name": "Create Scan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/scans",
+            "description": "Ingest a Trivy report",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ArtifactName\": \"nginx:1.25\",\n  \"ArtifactType\": \"container_image\",\n  \"Metadata\": {\n    \"ImageID\": \"sha256:abc123\",\n    \"RepoTags\": [\"nginx:1.25\"],\n    \"RepoDigests\": [\"nginx@sha256:def456\"]\n  },\n  \"Results\": [\n    {\n      \"Target\": \"nginx:1.25\",\n      \"Class\": \"os-pkgs\",\n      \"Type\": \"debian\",\n      \"Vulnerabilities\": [\n        {\n          \"VulnerabilityID\": \"CVE-2026-0001\",\n          \"PkgName\": \"openssl\",\n          \"Severity\": \"CRITICAL\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "try {",
+                  "  const res = pm.response.json();",
+                  "  if (res.id) pm.collectionVariables.set('scanId', res.id);",
+                  "  if (res.image_name) pm.collectionVariables.set('image', res.image_name);",
+                  "  if (res.image_tag) pm.collectionVariables.set('tag', res.image_tag);",
+                  "} catch (e) {",
+                  "  // ignore parse errors for non-json responses",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List By Tag",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/scans?tag={{tag}}",
+            "description": "List scans by image tag"
+          }
+        },
+        {
+          "name": "List By Tag Paginated",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/scans?tag={{tag}}&limit=50&offset=0",
+            "description": "List scans by tag with pagination"
+          }
+        },
+        {
+          "name": "List By Image",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/scans?image={{image}}",
+            "description": "List scans by image name"
+          }
+        },
+        {
+          "name": "List By Image And Severity",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/scans?image={{image}}&severity={{severity}}&limit=50&offset=0",
+            "description": "List scans by image filtered by vulnerability severity"
+          }
+        },
+        {
+          "name": "Get Vulnerabilities By Scan ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/scans/{{scanId}}/vulnerabilities?severity={{severity}}&pkg={{pkg}}",
+            "description": "Extract vulnerabilities from one scan"
+          }
+        },
+        {
+          "name": "Get Latest Scan By Image",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/scans/latest?image={{image}}",
+            "description": "Fetch latest scan for an image"
+          }
+        }
+      ]
+    }
+  ]
+}
