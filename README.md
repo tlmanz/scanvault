@@ -1,25 +1,40 @@
 # ScanVault
 
-A production-ready Go microservice - and **importable library** - that ingests [Trivy](https://github.com/aquasecurity/trivy) container image scan results and persists them in PostgreSQL for querying and historical analysis.
+A production-ready Go microservice — and **importable library** — that ingests [Trivy](https://github.com/aquasecurity/trivy) container image scan results and persists them in PostgreSQL for querying, deduplication, and historical analysis.
 
 ---
 
 ## Features
 
-- `POST /scans` - Ingest raw Trivy JSON; auto-extracts `image_name`, `image_tag`, `image_digest`
-- `GET /scans?tag=<tag>` - Query all scans by image tag
-- `GET /scans?image=<name>` - Query all scans by image name
-- `GET /scans?image=<name>&severity=<level>` - Return only scans that contain at least one matching vulnerability severity
-- Optional pagination on list endpoints via `limit` and `offset` query params
-- `GET /scans/{id}/vulnerabilities?severity=<level>&pkg=<name>` - Extract filtered vulnerabilities from one stored scan
-- `GET /scans/latest?image=<name>` - Fetch the most recent scan for an image
-- `GET /health` - Health check
+### Scan Ingestion
+- `POST /scans` — Ingest raw Trivy JSON; auto-extracts `image_name`, `image_tag`, `image_digest`
+- Vulnerability counts (`vuln_critical`, `vuln_high`, etc.) computed at ingest, stored as indexed columns
+- Individual CVE rows written to a normalised `vulnerabilities` table for fast fleet-wide queries
+- **Digest-based deduplication** — same `(image_name, image_digest)` updates in place instead of creating a new row; `200 OK` for upsert, `201 Created` for new rows
+
+### Scan Querying
+- `GET /scans?tag=<tag>` — Query all scans by image tag
+- `GET /scans?image=<name>` — Query all scans by image name
+- `GET /scans?image=<name>&severity=<level>` — Return only scans with at least one matching severity (uses pre-computed indexed columns — no JSONB scan)
+- `GET /scans/all` — Global scan list with optional `image`, `tag`, `limit`, `offset` filters
+- `GET /scans/{id}/vulnerabilities?severity=<level>&pkg=<name>` — Extract filtered vulnerabilities from one stored scan
+- `GET /scans/latest?image=<name>` — Fetch the most recent scan for an image
+- Optional pagination on all list endpoints via `limit` and `offset`
+
+### Analytics (all deduplicated to latest scan per image:tag)
+- `GET /analytics/vulnerabilities/summary` — Totals, severity breakdown, and **top 10 CVEs** inline
+- `GET /analytics/vulnerabilities/trends` — Vulnerability counts bucketed by day or week
+- `GET /analytics/vulnerabilities/top-cves` — Most common CVEs across the fleet, ordered by affected image count
+- `GET /analytics/vulnerabilities/cve/:cve_id/images` — Which images are currently exposed to a specific CVE
+- `GET /analytics/vulnerabilities/fixable` — Fixable vs non-fixable vulnerability counts with percentage
+
+### Infrastructure
+- `GET /health` — Health check
 - Query-param fallback (`?image=&tag=`) when Trivy metadata is absent
-- Struct-based config via [goconf](https://github.com/tlmanz/goconf) - prints a masked config table on startup
+- Struct-based config via [goconf](https://github.com/tlmanz/goconf) — prints a masked config table on startup
 - Structured logging with [zerolog](https://github.com/rs/zerolog)
 - Graceful shutdown
-- Embedded [goose](https://github.com/pressly/goose) migrations - run automatically at startup, no external tool needed
-- PostgreSQL JSONB storage, indexed on `image_tag`, `image_digest`, `image_name`
+- Embedded [goose](https://github.com/pressly/goose) migrations — run automatically at startup
 - Importable as a Go library with a clean `Server` API
 - Makefile for every common workflow
 
@@ -65,8 +80,6 @@ make run
 
 ## Using as a Library
 
-Yes - this is designed to be embedded in a separate, larger Go codebase as a package. You can run it as a standalone service, or mount its `http.Handler` into your existing server/router.
-
 Add to your project:
 
 ```bash
@@ -103,9 +116,6 @@ defer srv.Close()
 mux.Handle("/trivy/", http.StripPrefix("/trivy", srv.Handler()))
 ```
 
-Runnable example:
-- See [examples/existing-server](examples/existing-server) for a complete app that mounts ScanVault into an existing `net/http` server, adds app-owned routes/middleware, and uses an externally managed pgx pool.
-
 ### Functional options
 
 ```go
@@ -120,21 +130,13 @@ srv, _ := scanvault.New(ctx,
 
 ### Use an existing pgx pool
 
-When embedding ScanVault in a larger app, you can pass your existing `*pgxpool.Pool`.
-Startup migrations run through that same pool.
-
 ```go
 pool, _ := pgxpool.New(ctx, dsn)
 
 srv, err := scanvault.New(ctx,
-  scanvault.Config{}, // DatabaseURL not required when WithDBPool is provided
+  scanvault.Config{},
   scanvault.WithDBPool(pool),
 )
-if err != nil {
-  log.Fatal(err)
-}
-
-// WithDBPool means the pool is externally managed; close it in your app shutdown.
 defer pool.Close()
 ```
 
@@ -145,7 +147,7 @@ import "github.com/tlmanz/scanvault/models"
 
 var scan models.Scan
 json.Unmarshal(responseBody, &scan)
-fmt.Println(scan.ImageName, scan.ImageTag, scan.CreatedAt)
+fmt.Println(scan.ImageName, scan.ImageTag, scan.VulnCritical)
 ```
 
 ---
@@ -209,7 +211,7 @@ Config is loaded from env vars (or `.env`) via [goconf](https://github.com/tlman
 
 ### Cleanup Worker
 
-All three default to `0` / `1h`. Setting both `CLEANUP_MAX_AGE` and `CLEANUP_KEEP_PER_IMAGE` to zero disables the worker entirely - no background goroutine is spawned.
+All three default to `0` / `1h`. Setting both `CLEANUP_MAX_AGE` and `CLEANUP_KEEP_PER_IMAGE` to zero disables the worker entirely — no background goroutine is spawned.
 
 | Variable                 | Default   | Description                                 |
 | ------------------------ | --------- | ------------------------------------------- |
@@ -221,11 +223,9 @@ All three default to `0` / `1h`. Setting both `CLEANUP_MAX_AGE` and `CLEANUP_KEE
 
 ## Cleanup Worker
 
-A background goroutine runs on `CLEANUP_INTERVAL` and applies up to two retention policies. The worker only starts if at least one policy is non-zero - if both `CLEANUP_MAX_AGE` and `CLEANUP_KEEP_PER_IMAGE` are `0`, no goroutine is spawned.
+A background goroutine runs on `CLEANUP_INTERVAL` and applies up to two retention policies. The worker only starts if at least one policy is non-zero.
 
-### Policy interaction
-
-When **both** policies are set, a scan must fail **both** to be deleted - per-image retention always wins over age:
+When both policies are set, a scan must fail **both** to be deleted — per-image retention always wins over age:
 
 | `CLEANUP_MAX_AGE` | `CLEANUP_KEEP_PER_IMAGE` | What gets deleted                                                                |
 | ----------------- | ------------------------ | -------------------------------------------------------------------------------- |
@@ -233,18 +233,7 @@ When **both** policies are set, a scan must fail **both** to be deleted - per-im
 | off               | `10`                     | Every scan past the top 10 per image                                             |
 | `72h`             | `10`                     | Only scans that are **both** older than 72 h **AND** ranked #11+ for their image |
 
-**Example:** 15 nginx scans all 5 days old - with `MAX_AGE=72h` + `KEEP_PER_IMAGE=10`, the top 10 are **kept** (protected by count), scans #11–15 are deleted (old + outside the window).
-
-### Library usage
-
-```go
-srv, _ := scanvault.New(ctx, scanvault.Config{
-    DatabaseURL:         dsn,
-    CleanupMaxAge:       7 * 24 * time.Hour, // delete scans older than 1 week
-    CleanupKeepPerImage: 10,                 // but always keep the last 10 per image
-    CleanupInterval:     30 * time.Minute,   // run every 30 min
-})
-```
+> Vulnerability rows in the `vulnerabilities` table are automatically deleted via `ON DELETE CASCADE` when a scan is pruned — no extra cleanup logic needed.
 
 ---
 
@@ -254,16 +243,26 @@ srv, _ := scanvault.New(ctx, scanvault.Config{
 
 | Method | Path | Purpose |
 | ------ | ---- | ------- |
-| `GET` | `/health` | Service health check |
+| `GET`  | `/health` | Service health check |
 | `POST` | `/scans` | Ingest one Trivy JSON report |
-| `GET` | `/scans?tag=<tag>` | List scans by image tag |
-| `GET` | `/scans?image=<name>[&severity=<level>]` | List scans by image name, optionally severity-filtered |
-| `GET` | `/scans/{id}/vulnerabilities[?severity=<level>&pkg=<name>]` | Extract vulnerabilities from one stored scan |
-| `GET` | `/scans/latest?image=<name>` | Fetch latest scan for an image |
+| `GET`  | `/scans?tag=<tag>` | List scans by image tag |
+| `GET`  | `/scans?image=<name>[&severity=<level>]` | List scans by image name, optionally severity-filtered |
+| `GET`  | `/scans/all[?image=&tag=&limit=&offset=]` | List scans globally with optional filters |
+| `GET`  | `/scans/{id}/vulnerabilities[?severity=&pkg=]` | Extract vulnerabilities from one stored scan |
+| `GET`  | `/scans/latest?image=<name>` | Fetch latest scan for an image |
+| `GET`  | `/analytics/vulnerabilities/summary` | Totals, severity breakdown, top 10 CVEs |
+| `GET`  | `/analytics/vulnerabilities/trends` | Bucketed vulnerability trend points |
+| `GET`  | `/analytics/vulnerabilities/top-cves` | Top CVEs by number of affected images |
+| `GET`  | `/analytics/vulnerabilities/cve/:cve_id/images` | Images currently exposed to a CVE |
+| `GET`  | `/analytics/vulnerabilities/fixable` | Fixable vs non-fixable vuln counts |
+
+---
 
 ### `POST /scans`
 
 Ingest a raw Trivy JSON scan result. Metadata is auto-extracted from `ArtifactName` and `Metadata`; query params override.
+
+**Deduplication:** if `image_digest` is non-empty and a row for that `(image_name, image_digest)` already exists, the row is updated in place and `200 OK` is returned. Empty digest (mutable tags like `latest`) always creates a new row.
 
 | Query param | Description           |
 | ----------- | --------------------- |
@@ -271,22 +270,7 @@ Ingest a raw Trivy JSON scan result. Metadata is auto-extracted from `ArtifactNa
 | `tag`       | Override image tag    |
 | `digest`    | Override image digest |
 
-**Request body** - raw Trivy JSON:
-
-```json
-{
-  "ArtifactName": "nginx:1.25",
-  "ArtifactType": "container_image",
-  "Metadata": {
-    "ImageID": "sha256:abc123...",
-    "RepoTags": ["nginx:1.25"],
-    "RepoDigests": ["nginx@sha256:def456..."]
-  },
-  "Results": [...]
-}
-```
-
-**`201 Created`**
+**`201 Created`** (new scan) or **`200 OK`** (digest upsert):
 
 ```json
 {
@@ -295,81 +279,197 @@ Ingest a raw Trivy JSON scan result. Metadata is auto-extracted from `ArtifactNa
   "image_tag": "1.25",
   "image_digest": "sha256:abc123...",
   "scan_result": { "...": "..." },
-  "created_at": "2026-04-20T14:35:00Z"
+  "created_at": "2026-04-20T14:35:00Z",
+  "vuln_critical": 1,
+  "vuln_high": 2,
+  "vuln_medium": 3,
+  "vuln_low": 0,
+  "vuln_unknown": 0
 }
 ```
 
+---
+
 ### `GET /scans?tag=<tag>`
 
-Optional pagination query params:
-- `limit` (0..500)
-- `offset` (>= 0)
+Optional pagination: `limit` (0–500), `offset` (≥ 0).
 
-**`200 OK`** - `{ "tag": "1.25", "count": 2, "items": [...] }`
+**`200 OK`** — `{ "tag": "1.25", "count": 2, "items": [...] }`
 
-When pagination params are provided, response also includes `limit` and `offset`.
-
-Common errors:
-- **`400 Bad Request`** for invalid `limit`/`offset`
-- **`500 Internal Server Error`** on backend/query failure
+---
 
 ### `GET /scans?image=<name>[&severity=<level>]`
 
-Examples:
-- `/scans?image=nginx`
-- `/scans?image=nginx&severity=CRITICAL`
-- `/scans?image=nginx&severity=CRITICAL&limit=50&offset=0`
+Severity filter uses pre-computed indexed columns — no JSONB scan. Valid values: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `UNKNOWN`.
 
-**`200 OK`** - `{ "image": "nginx", "severity": "CRITICAL", "count": 1, "items": [...] }`
+**`200 OK`** — `{ "image": "nginx", "severity": "CRITICAL", "count": 1, "items": [...] }`
 
-When pagination params are provided, response also includes `limit` and `offset`.
+---
 
-Common errors:
-- **`400 Bad Request`** if `limit`/`offset` are invalid
-- **`500 Internal Server Error`** on backend/query failure
+### `GET /analytics/vulnerabilities/summary`
 
-### `GET /scans/{id}/vulnerabilities?severity=<level>&pkg=<name>`
+Deduplicates to the **latest scan per `(image_name, image_tag)`** before aggregating — rescanning the same tag never inflates totals.
 
-Both filters are optional. When provided, matching is case-insensitive.
+| Query param | Description |
+| ----------- | ----------- |
+| `image`     | Filter to one image (optional) |
+| `from`, `to` | RFC 3339 time range (optional) |
 
 **`200 OK`**
 
 ```json
 {
-  "scan_id": "550e8400-e29b-41d4-a716-446655440000",
-  "image_name": "nginx",
-  "image_tag": "1.25",
-  "severity": "HIGH",
-  "pkg": "openssl",
-  "count": 1,
-  "items": [
+  "image": "nginx",
+  "total_scans": 3,
+  "total_vulnerabilities": 47,
+  "severity_counts": [
+    { "severity": "CRITICAL", "count": 6 },
+    { "severity": "HIGH",     "count": 19 }
+  ],
+  "top_cves": [
+    { "cve_id": "CVE-2024-1234", "severity": "CRITICAL", "title": "...", "image_count": 3, "fixable": true }
+  ]
+}
+```
+
+---
+
+### `GET /analytics/vulnerabilities/top-cves`
+
+Returns the most common CVEs across the latest scan of each image:tag, ordered by number of distinct affected images.
+
+| Query param | Description |
+| ----------- | ----------- |
+| `image`     | Filter to one image (optional) |
+| `severity`  | Filter to one severity level (optional) |
+| `limit`     | Max results, default 10, max 100 |
+| `from`, `to` | RFC 3339 time range (optional) |
+
+**`200 OK`**
+
+```json
+{
+  "image": "",
+  "severity": "",
+  "limit": 10,
+  "count": 2,
+  "cves": [
+    { "cve_id": "CVE-2024-1234", "severity": "CRITICAL", "title": "OpenSSL: ...", "image_count": 5, "fixable": true },
+    { "cve_id": "CVE-2024-5678", "severity": "HIGH",     "title": "glibc: ...",   "image_count": 3, "fixable": false }
+  ]
+}
+```
+
+---
+
+### `GET /analytics/vulnerabilities/cve/:cve_id/images`
+
+Returns all images currently exposed to the given CVE ID, using the latest scan per `(image_name, image_tag)`.
+
+**`200 OK`**
+
+```json
+{
+  "cve_id": "CVE-2024-1234",
+  "count": 2,
+  "images": [
     {
-      "target": "nginx:1.25 (debian 12.1)",
-      "class": "os-pkgs",
-      "type": "debian",
-      "vulnerability": {
-        "VulnerabilityID": "CVE-2026-12345",
-        "PkgName": "openssl",
-        "Severity": "HIGH"
-      }
+      "image_name": "nginx",
+      "image_tag": "1.25",
+      "pkg_name": "openssl",
+      "pkg_version": "3.0.2",
+      "fixed_version": "3.0.3",
+      "scanned_at": "2026-04-20T14:35:00Z"
     }
   ]
 }
 ```
 
-Common errors:
-- **`404 Not Found`** if scan ID does not exist
-- **`400 Bad Request`** if stored scan payload cannot be interpreted as Trivy vulnerabilities report
-- **`500 Internal Server Error`** on backend/query failure
+---
 
-### `GET /scans/latest?image=<name>`
+### `GET /analytics/vulnerabilities/fixable`
 
-**`200 OK`** - single `Scan` object  
-**`404 Not Found`** - `{ "error": "no scans found for image: nginx" }`
+Returns fixable vs non-fixable vulnerability counts across the latest scan per image:tag,
+plus the full list of fixable vulnerabilities ordered by severity (CRITICAL first) then CVE ID.
 
-### `GET /health`
+| Query param | Description |
+| ----------- | ----------- |
+| `image`     | Filter to one image (optional) |
+| `from`, `to` | RFC 3339 time range (optional) |
 
-**`200 OK`** - `{ "status": "ok" }`
+**`200 OK`**
+
+```json
+{
+  "image": "nginx",
+  "total_vulns": 47,
+  "fixable": 31,
+  "not_fixable": 16,
+  "fixable_pct": 65.96,
+  "fixable_items": [
+    {
+      "cve_id": "CVE-2024-1234",
+      "pkg_name": "openssl",
+      "pkg_version": "3.0.2",
+      "fixed_version": "3.0.3",
+      "severity": "CRITICAL",
+      "title": "OpenSSL: memory corruption in AES",
+      "image_name": "nginx",
+      "image_tag": "1.25"
+    },
+    {
+      "cve_id": "CVE-2024-5678",
+      "pkg_name": "busybox",
+      "pkg_version": "1.35.0",
+      "fixed_version": "1.36.0",
+      "severity": "HIGH",
+      "title": "busybox: command injection",
+      "image_name": "nginx",
+      "image_tag": "1.26"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /analytics/vulnerabilities/trends`
+
+Vulnerability counts bucketed by day or week, deduplicated to latest scan per tag per bucket.
+
+| Query param | Description |
+| ----------- | ----------- |
+| `image`     | Filter to one image (optional) |
+| `interval`  | `day` or `week` (default: `day`) |
+| `from`, `to` | RFC 3339 time range (optional) |
+
+**`200 OK`**
+
+```json
+{
+  "image": "nginx",
+  "interval": "day",
+  "count": 2,
+  "points": [
+    { "bucket": "2026-04-20T00:00:00Z", "severity": "CRITICAL", "count": 2 },
+    { "bucket": "2026-04-21T00:00:00Z", "severity": "HIGH",     "count": 3 }
+  ]
+}
+```
+
+---
+
+### `GET /scans/{id}/vulnerabilities`
+
+Extracts vulnerabilities from the stored JSONB blob for a specific scan. Both filters are optional and case-insensitive.
+
+| Query param | Description |
+| ----------- | ----------- |
+| `severity`  | Filter by severity (optional) |
+| `pkg`       | Filter by package name (optional) |
+
+**`200 OK`** — `{ "scan_id": "...", "count": 1, "items": [...] }`  
+**`404 Not Found`** — scan ID does not exist
 
 ---
 
@@ -383,29 +483,38 @@ curl -s -X POST http://localhost:8080/scans \
     "ArtifactName": "nginx:1.25",
     "ArtifactType": "container_image",
     "Metadata": {
-      "ImageID": "sha256:a6786163c6f2b5d2813e0c9f3c64e28b23e16a35d76fb9d4caf3fd7e73ef57b1",
+      "ImageID": "sha256:abc123",
       "RepoTags": ["nginx:1.25"],
-      "RepoDigests": ["nginx@sha256:6813af4b5b4a5f8c19e3e5f09e77dfa6f27c4e0b9a1e5a75c7b3e2d11c52a49"]
+      "RepoDigests": ["nginx@sha256:def456"]
     },
-    "Results": [{"Target": "nginx:1.25 (debian 12.1)", "Class": "os-pkgs", "Vulnerabilities": []}]
+    "Results": [{"Target": "nginx:1.25", "Class": "os-pkgs", "Vulnerabilities": [
+      {"VulnerabilityID":"CVE-2026-0001","PkgName":"openssl","FixedVersion":"3.0.3","Severity":"CRITICAL","Title":"OpenSSL bug"}
+    ]}]
   }' | jq .
 
-# Fallback: metadata via query params
-curl -s -X POST "http://localhost:8080/scans?image=alpine&tag=3.19" \
-  -H "Content-Type: application/json" \
-  -d '{"ArtifactType":"container_image","Results":[]}' | jq .
-
-# Query by tag
-curl -s "http://localhost:8080/scans?tag=1.25" | jq .
-
-# Query by image + severity
+# Query by image + severity (uses indexed column, fast)
 curl -s "http://localhost:8080/scans?image=nginx&severity=CRITICAL" | jq .
 
-# List vulnerabilities from a scan (filtered)
-curl -s "http://localhost:8080/scans/<scan-id>/vulnerabilities?severity=HIGH&pkg=openssl" | jq .
+# Vulnerability summary with top CVEs
+curl -s "http://localhost:8080/analytics/vulnerabilities/summary?image=nginx" | jq .
+
+# Top 20 CVEs across the entire fleet
+curl -s "http://localhost:8080/analytics/vulnerabilities/top-cves?limit=20" | jq .
+
+# Which images are affected by a specific CVE?
+curl -s "http://localhost:8080/analytics/vulnerabilities/cve/CVE-2026-0001/images" | jq .
+
+# How many vulns have a fix available?
+curl -s "http://localhost:8080/analytics/vulnerabilities/fixable?image=nginx" | jq .
+
+# Vulnerability trends by day
+curl -s "http://localhost:8080/analytics/vulnerabilities/trends?image=nginx&interval=day" | jq .
 
 # Latest scan for an image
 curl -s "http://localhost:8080/scans/latest?image=nginx" | jq .
+
+# Extract filtered vulnerabilities from a specific scan
+curl -s "http://localhost:8080/scans/<scan-id>/vulnerabilities?severity=HIGH&pkg=openssl" | jq .
 ```
 
 ---
@@ -416,7 +525,7 @@ curl -s "http://localhost:8080/scans/latest?image=nginx" | jq .
 # Unit tests (no Docker required)
 go test -race ./internal/parser/... ./internal/config/... ./internal/handlers/...
 
-# Integration tests (requires Docker - spins up a real Postgres via testcontainers)
+# Integration tests (requires Docker — spins up a real Postgres via testcontainers)
 go test -race -v ./internal/repository/...
 
 # Everything
@@ -425,10 +534,10 @@ make test
 
 Test coverage:
 
-- **Parser** - metadata extraction, tag splitting, digest fallback, invalid JSON
-- **Config** - defaults, env overrides, validation errors
-- **Handlers** - all endpoints via `httptest` + in-memory mock store
-- **Repository** - integration tests against a real Postgres container
+- **Parser** — metadata extraction, tag splitting, digest fallback, vuln extraction, invalid JSON
+- **Config** — defaults, env overrides, validation errors
+- **Handlers** — all endpoints via `httptest` + in-memory mock store
+- **Repository** — integration tests against a real Postgres container (including digest deduplication, vuln counts, analytics)
 
 ---
 
@@ -441,20 +550,27 @@ scanvault/
 ├── options.go                      # Functional options (WithLogger, WithPort)
 ├── migrate.go                      # Embedded goose migration runner
 ├── models/
-│   └── scan.go                     # Public Scan type
+│   ├── scan.go                     # Scan, VulnCounts, VulnerabilitySummary types
+│   └── vulnerability.go            # Vulnerability, TopCVE, AffectedImage, FixableSummary
 ├── cmd/server/main.go              # Thin CLI entrypoint
 ├── internal/
 │   ├── config/config.go            # goconf env-based config
 │   ├── db/db.go                    # pgx/v5 connection pool
 │   ├── handlers/scan_handler.go    # HTTP handlers (uses Store interface)
-│   ├── parser/trivy.go             # Trivy JSON metadata extractor
-│   ├── repository/scan_repo.go     # PostgreSQL queries + cleanup methods
+│   ├── parser/trivy.go             # Trivy JSON parser (meta + vuln extraction)
+│   ├── repository/scan_repo.go     # PostgreSQL queries + analytics + cleanup
 │   └── worker/cleanup.go           # Background cleanup worker
 ├── migrations/
-│   ├── 001_create_scans.sql        # Goose SQL migration (Up + Down)
+│   ├── 001_create_scans.sql        # Base scans table
+│   ├── 002_add_scan_result_gin_index.sql  # GIN index on scan_result
+│   ├── 003_add_vuln_summary.sql    # vuln_* count columns + partial indexes
+│   ├── 004_upsert_digest_index.sql # Unique partial index for digest dedup
+│   ├── 005_create_vulnerabilities.sql    # Normalised vulnerabilities table
 │   └── embed.go                    # //go:embed *.sql
-├── Dockerfile                      # Multi-stage: golang builder + distroless
-├── docker-compose.yml              # postgres + api (no separate migrate service)
+├── postman/
+│   └── ScanVault.postman_collection.json
+├── Dockerfile
+├── docker-compose.yml
 ├── Makefile
 └── .env.example
 ```
@@ -464,19 +580,38 @@ scanvault/
 ## Database Schema
 
 ```sql
+-- Core scan records
 CREATE TABLE scans (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     image_name    TEXT        NOT NULL,
     image_tag     TEXT        NOT NULL DEFAULT '',
     image_digest  TEXT        NOT NULL DEFAULT '',
     scan_result   JSONB       NOT NULL,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Pre-computed at ingest for fast indexed filtering
+    vuln_critical INT         NOT NULL DEFAULT 0,
+    vuln_high     INT         NOT NULL DEFAULT 0,
+    vuln_medium   INT         NOT NULL DEFAULT 0,
+    vuln_low      INT         NOT NULL DEFAULT 0,
+    vuln_unknown  INT         NOT NULL DEFAULT 0
 );
 
-CREATE INDEX idx_scans_image_tag    ON scans(image_tag);
-CREATE INDEX idx_scans_image_digest ON scans(image_digest);
-CREATE INDEX idx_scans_image_name   ON scans(image_name);
-CREATE INDEX idx_scans_created_at   ON scans(created_at DESC);
+-- Digest dedup: one row per (image_name, image_digest) when digest is non-empty
+CREATE UNIQUE INDEX idx_scans_image_digest_unique ON scans(image_name, image_digest)
+    WHERE image_digest != '';
+
+-- Normalised vulnerability rows (populated atomically with each scan upsert)
+CREATE TABLE vulnerabilities (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scan_id       UUID NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    cve_id        TEXT NOT NULL,
+    pkg_name      TEXT NOT NULL,
+    pkg_version   TEXT NOT NULL DEFAULT '',
+    fixed_version TEXT NOT NULL DEFAULT '',
+    severity      TEXT NOT NULL,
+    title         TEXT NOT NULL DEFAULT '',
+    UNIQUE (scan_id, cve_id, pkg_name)
+);
 ```
 
 ---

@@ -2,34 +2,19 @@
   "info": {
     "_postman_id": "8d8b4cdb-0bfd-4526-b9c3-40f4cb15d8e0",
     "name": "ScanVault API",
-    "description": "Collection for ScanVault endpoints. Set baseUrl and run Create Scan first to auto-populate scanId.",
+    "description": "Collection for ScanVault endpoints.\n\n**Quick start:**\n1. Run **Create Scan** — auto-populates `scanId`, `image`, `tag`.\n2. All other requests pick those variables up automatically.\n\n**Collection variables:** `baseUrl`, `image`, `tag`, `severity`, `pkg`, `scanId`, `cveId`, `from`, `to`",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    {
-      "key": "baseUrl",
-      "value": "http://localhost:8080"
-    },
-    {
-      "key": "image",
-      "value": "nginx"
-    },
-    {
-      "key": "tag",
-      "value": "1.25"
-    },
-    {
-      "key": "severity",
-      "value": "CRITICAL"
-    },
-    {
-      "key": "pkg",
-      "value": "openssl"
-    },
-    {
-      "key": "scanId",
-      "value": ""
-    }
+    { "key": "baseUrl",  "value": "http://localhost:8080" },
+    { "key": "image",    "value": "nginx" },
+    { "key": "tag",      "value": "1.25" },
+    { "key": "severity", "value": "CRITICAL" },
+    { "key": "pkg",      "value": "openssl" },
+    { "key": "scanId",   "value": "" },
+    { "key": "cveId",    "value": "CVE-2024-1234" },
+    { "key": "from",     "value": "2026-01-01T00:00:00Z" },
+    { "key": "to",       "value": "2026-12-31T23:59:59Z" }
   ],
   "item": [
     {
@@ -38,7 +23,7 @@
         "method": "GET",
         "header": [],
         "url": "{{baseUrl}}/health",
-        "description": "Service health check"
+        "description": "Service liveness check. Returns `{\"status\":\"ok\"}` when the server is up."
       },
       "event": [
         {
@@ -46,9 +31,8 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('status is 200', function () {",
-              "  pm.response.to.have.status(200);",
-              "});"
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "pm.test('body has status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
             ]
           }
         }
@@ -61,22 +45,13 @@
           "name": "Create Scan",
           "request": {
             "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": "{{baseUrl}}/scans",
-            "description": "Ingest a Trivy report",
+            "description": "Ingest a Trivy JSON report.\n\n- Vulnerability counts (`vuln_critical` etc.) are computed and stored at ingest time.\n- Individual CVE rows are written to the `vulnerabilities` table atomically.\n- If a digest is provided and a scan for the same `(image_name, image_digest)` already exists, the existing row is **updated** and `200 OK` is returned instead of `201 Created`.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"ArtifactName\": \"nginx:1.25\",\n  \"ArtifactType\": \"container_image\",\n  \"Metadata\": {\n    \"ImageID\": \"sha256:abc123\",\n    \"RepoTags\": [\"nginx:1.25\"],\n    \"RepoDigests\": [\"nginx@sha256:def456\"]\n  },\n  \"Results\": [\n    {\n      \"Target\": \"nginx:1.25\",\n      \"Class\": \"os-pkgs\",\n      \"Type\": \"debian\",\n      \"Vulnerabilities\": [\n        {\n          \"VulnerabilityID\": \"CVE-2026-0001\",\n          \"PkgName\": \"openssl\",\n          \"Severity\": \"CRITICAL\"\n        }\n      ]\n    }\n  ]\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
+              "raw": "{\n  \"ArtifactName\": \"nginx:1.25\",\n  \"ArtifactType\": \"container_image\",\n  \"Metadata\": {\n    \"ImageID\": \"sha256:abc123\",\n    \"RepoTags\": [\"nginx:1.25\"],\n    \"RepoDigests\": [\"nginx@sha256:def456\"]\n  },\n  \"Results\": [\n    {\n      \"Target\": \"nginx:1.25 (debian 12)\",\n      \"Class\": \"os-pkgs\",\n      \"Type\": \"debian\",\n      \"Vulnerabilities\": [\n        {\n          \"VulnerabilityID\": \"CVE-2026-0001\",\n          \"PkgName\": \"openssl\",\n          \"InstalledVersion\": \"3.0.2-0ubuntu1.12\",\n          \"FixedVersion\": \"3.0.2-0ubuntu1.13\",\n          \"Severity\": \"CRITICAL\",\n          \"Title\": \"OpenSSL: memory corruption\"\n        },\n        {\n          \"VulnerabilityID\": \"CVE-2026-0002\",\n          \"PkgName\": \"glibc\",\n          \"InstalledVersion\": \"2.35-0ubuntu3.1\",\n          \"FixedVersion\": \"\",\n          \"Severity\": \"HIGH\",\n          \"Title\": \"glibc: heap overflow\"\n        },\n        {\n          \"VulnerabilityID\": \"CVE-2026-0003\",\n          \"PkgName\": \"busybox\",\n          \"InstalledVersion\": \"1.35.0\",\n          \"FixedVersion\": \"1.36.0\",\n          \"Severity\": \"MEDIUM\",\n          \"Title\": \"busybox: command injection\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
             }
           },
           "event": [
@@ -85,18 +60,24 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 201', function () {",
-                  "  pm.response.to.have.status(201);",
-                  "});",
-                  "",
+                  "pm.test('status is 201 or 200', () => pm.expect([200, 201]).to.include(pm.response.code));",
                   "try {",
                   "  const res = pm.response.json();",
-                  "  if (res.id) pm.collectionVariables.set('scanId', res.id);",
-                  "  if (res.image_name) pm.collectionVariables.set('image', res.image_name);",
-                  "  if (res.image_tag) pm.collectionVariables.set('tag', res.image_tag);",
-                  "} catch (e) {",
-                  "  // ignore parse errors for non-json responses",
-                  "}"
+                  "  if (res.id)         pm.collectionVariables.set('scanId', res.id);",
+                  "  if (res.image_name) pm.collectionVariables.set('image',  res.image_name);",
+                  "  if (res.image_tag)  pm.collectionVariables.set('tag',    res.image_tag);",
+                  "  pm.test('response has vuln counts', () => {",
+                  "    pm.expect(res).to.have.property('vuln_critical');",
+                  "    pm.expect(res).to.have.property('vuln_high');",
+                  "    pm.expect(res).to.have.property('vuln_medium');",
+                  "    pm.expect(res).to.have.property('vuln_low');",
+                  "    pm.expect(res).to.have.property('vuln_unknown');",
+                  "  });",
+                  "  const action = pm.response.code === 201 ? 'created' : 'upserted';",
+                  "  console.log('Scan', action, '| id:', res.id,",
+                  "    '| critical:', res.vuln_critical, '| high:', res.vuln_high,",
+                  "    '| medium:', res.vuln_medium);",
+                  "} catch(e) { console.error(e); }"
                 ]
               }
             }
@@ -108,16 +89,28 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/scans?tag={{tag}}",
-            "description": "List scans by image tag"
-          }
+            "description": "List all scans for a given image tag, newest first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('items is array', () => pm.expect(pm.response.json().items).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "List By Tag Paginated",
+          "name": "List By Tag (Paginated)",
           "request": {
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/scans?tag={{tag}}&limit=50&offset=0",
-            "description": "List scans by tag with pagination"
+            "description": "List scans by tag with pagination. `limit` max is 500."
           }
         },
         {
@@ -126,7 +119,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/scans?image={{image}}",
-            "description": "List scans by image name"
+            "description": "List all scans for an image name, newest first."
           }
         },
         {
@@ -135,17 +128,56 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/scans?image={{image}}&severity={{severity}}&limit=50&offset=0",
-            "description": "List scans by image filtered by vulnerability severity"
-          }
+            "description": "List scans for an image that have at least one vulnerability of the given severity.\n\nUses pre-computed indexed columns — no JSONB scan.\n\nValid severities: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `UNKNOWN`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const severity = pm.collectionVariables.get('severity').toLowerCase();",
+                  "const field = 'vuln_' + severity;",
+                  "const items = pm.response.json().items || [];",
+                  "pm.test('all items have ' + field + ' > 0', () => {",
+                  "  items.forEach(item => pm.expect(item[field], item.id).to.be.above(0));",
+                  "});"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "Get Vulnerabilities By Scan ID",
+          "name": "List All Scans",
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/scans/{{scanId}}/vulnerabilities?severity={{severity}}&pkg={{pkg}}",
-            "description": "Extract vulnerabilities from one scan"
-          }
+            "url": {
+              "raw": "{{baseUrl}}/scans/all?limit=100&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["scans", "all"],
+              "query": [
+                { "key": "limit",  "value": "100" },
+                { "key": "offset", "value": "0" },
+                { "key": "image",  "value": "{{image}}", "disabled": true },
+                { "key": "tag",    "value": "{{tag}}",   "disabled": true }
+              ]
+            },
+            "description": "List all scans across all images. Enable the disabled params to filter by image/tag."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('response has count', () => pm.expect(pm.response.json()).to.have.property('count'));"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Get Latest Scan By Image",
@@ -153,8 +185,273 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/scans/latest?image={{image}}",
-            "description": "Fetch latest scan for an image"
+            "description": "Returns the single most recent scan for the given image name."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 404', () => pm.expect([200, 404]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Vulnerabilities By Scan ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/scans/{{scanId}}/vulnerabilities?severity={{severity}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["scans", "{{scanId}}", "vulnerabilities"],
+              "query": [
+                { "key": "severity", "value": "{{severity}}" },
+                { "key": "pkg",      "value": "{{pkg}}", "disabled": true }
+              ]
+            },
+            "description": "Extract individual vulnerability entries from one scan result (parsed from the JSONB blob at query time).\n\n- `severity` — filter by severity level (optional, case-insensitive)\n- `pkg` — filter by package name (optional, enable param above)"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 404', () => pm.expect([200, 404]).to.include(pm.response.code));",
+                  "if (pm.response.code === 200) {",
+                  "  pm.test('items is array', () => pm.expect(pm.response.json().items).to.be.an('array'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "Vulnerability Summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/analytics/vulnerabilities/summary?image={{image}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["analytics", "vulnerabilities", "summary"],
+              "query": [
+                { "key": "image", "value": "{{image}}" },
+                { "key": "from",  "value": "{{from}}", "disabled": true },
+                { "key": "to",    "value": "{{to}}",   "disabled": true }
+              ]
+            },
+            "description": "Aggregate vulnerability counts across the **latest scan per image:tag** — rescanning the same tag never inflates totals.\n\nResponse includes:\n- `total_scans` — number of unique image:tag combinations\n- `total_vulnerabilities` — sum across all latest scans\n- `severity_counts` — breakdown by severity\n- `top_cves` — top 10 CVEs by number of affected images"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('response shape is valid', () => {",
+                  "  const res = pm.response.json();",
+                  "  pm.expect(res).to.have.property('total_scans');",
+                  "  pm.expect(res).to.have.property('total_vulnerabilities');",
+                  "  pm.expect(res.severity_counts).to.be.an('array');",
+                  "  pm.expect(res.top_cves).to.be.an('array');",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  console.log('Total vulns:', res.total_vulnerabilities, '| Top CVEs:', res.top_cves.length);",
+                  "  if (res.top_cves.length) console.log('Top CVE:', res.top_cves[0].cve_id, res.top_cves[0].severity);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Vulnerability Trends (Daily)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/analytics/vulnerabilities/trends?image={{image}}&interval=day",
+              "host": ["{{baseUrl}}"],
+              "path": ["analytics", "vulnerabilities", "trends"],
+              "query": [
+                { "key": "image",    "value": "{{image}}" },
+                { "key": "interval", "value": "day" },
+                { "key": "from",     "value": "{{from}}", "disabled": true },
+                { "key": "to",       "value": "{{to}}",   "disabled": true }
+              ]
+            },
+            "description": "Vulnerability counts bucketed by day. Deduplicates to latest scan per tag per bucket."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('points is array', () => pm.expect(pm.response.json().points).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Vulnerability Trends (Weekly)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/analytics/vulnerabilities/trends?image={{image}}&interval=week",
+              "host": ["{{baseUrl}}"],
+              "path": ["analytics", "vulnerabilities", "trends"],
+              "query": [
+                { "key": "image",    "value": "{{image}}" },
+                { "key": "interval", "value": "week" }
+              ]
+            },
+            "description": "Vulnerability counts bucketed by week."
           }
+        },
+        {
+          "name": "Top CVEs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/analytics/vulnerabilities/top-cves?image={{image}}&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["analytics", "vulnerabilities", "top-cves"],
+              "query": [
+                { "key": "image",    "value": "{{image}}" },
+                { "key": "limit",    "value": "10" },
+                { "key": "severity", "value": "{{severity}}", "disabled": true },
+                { "key": "from",     "value": "{{from}}",     "disabled": true },
+                { "key": "to",       "value": "{{to}}",       "disabled": true }
+              ]
+            },
+            "description": "Returns the top N CVEs ordered by number of distinct images affected.\n\nDeduplicates by latest scan per `(image_name, image_tag)` before counting.\n\nEach CVE entry includes:\n- `cve_id`, `severity`, `title`\n- `image_count` — distinct images currently affected\n- `fixable` — `true` if at least one fix version exists\n\nOptional filters: `image`, `severity`, `from`, `to`, `limit` (max 100, default 10)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('cves is array', () => pm.expect(pm.response.json().cves).to.be.an('array'));",
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.cves.length > 0) {",
+                  "    const top = res.cves[0];",
+                  "    console.log('Top CVE:', top.cve_id, '|', top.severity, '| images:', top.image_count, '| fixable:', top.fixable);",
+                  "    // Save top CVE id for the affected-images request",
+                  "    pm.collectionVariables.set('cveId', top.cve_id);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CVE Affected Images",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/analytics/vulnerabilities/cve/{{cveId}}/images",
+              "host": ["{{baseUrl}}"],
+              "path": ["analytics", "vulnerabilities", "cve", "{{cveId}}", "images"]
+            },
+            "description": "Returns all images currently exposed to the given CVE.\n\nUses latest-scan-per-tag deduplication — each `(image_name, image_tag)` appears at most once.\n\nEach entry includes:\n- `image_name`, `image_tag`\n- `pkg_name`, `pkg_version`\n- `fixed_version` — empty means no fix available\n- `scanned_at` — timestamp of the scan\n\nRun **Top CVEs** first to auto-populate the `cveId` variable, or set it manually."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('images is array', () => pm.expect(pm.response.json().images).to.be.an('array'));",
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  console.log('CVE:', res.cve_id, '| affected images:', res.count);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fixable Summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/analytics/vulnerabilities/fixable?image={{image}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["analytics", "vulnerabilities", "fixable"],
+              "query": [
+                { "key": "image", "value": "{{image}}" },
+                { "key": "from",  "value": "{{from}}", "disabled": true },
+                { "key": "to",    "value": "{{to}}",   "disabled": true }
+              ]
+            },
+            "description": "Returns how many of the current vulnerabilities (latest scan per image:tag) have a known fix version available.\n\nResponse fields:\n- `total_vulns` — total unique vulnerabilities across latest scans\n- `fixable` — count with a non-empty `fixed_version`\n- `not_fixable` — count with no fix\n- `fixable_pct` — percentage (0–100)"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('response has fixable fields', () => {",
+                  "  const res = pm.response.json();",
+                  "  pm.expect(res).to.have.property('total_vulns');",
+                  "  pm.expect(res).to.have.property('fixable');",
+                  "  pm.expect(res).to.have.property('not_fixable');",
+                  "  pm.expect(res).to.have.property('fixable_pct');",
+                  "  pm.expect(res.fixable_items).to.be.an('array');",
+                  "});",
+                  "pm.test('fixable_items have required fields', () => {",
+                  "  const items = pm.response.json().fixable_items || [];",
+                  "  items.slice(0, 5).forEach(item => {",
+                  "    pm.expect(item).to.have.property('cve_id');",
+                  "    pm.expect(item).to.have.property('pkg_name');",
+                  "    pm.expect(item).to.have.property('fixed_version');",
+                  "    pm.expect(item.fixed_version).to.not.be.empty;",
+                  "    pm.expect(item).to.have.property('severity');",
+                  "    pm.expect(item).to.have.property('image_name');",
+                  "    pm.expect(item).to.have.property('image_tag');",
+                  "  });",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  console.log('Total:', res.total_vulns, '| Fixable:', res.fixable,",
+                  "    '(' + res.fixable_pct.toFixed(1) + '%) | Items returned:', res.fixable_items.length);",
+                  "  if (res.fixable_items.length) {",
+                  "    const top = res.fixable_items[0];",
+                  "    console.log('Top fixable:', top.cve_id, '|', top.severity,",
+                  "      '| upgrade', top.pkg_name, top.pkg_version, '->', top.fixed_version);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

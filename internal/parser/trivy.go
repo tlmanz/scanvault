@@ -5,8 +5,50 @@ import (
 	"strings"
 
 	"github.com/distribution/reference"
+	"github.com/tlmanz/scanvault/models"
 )
 
+// trivyVuln is the minimal Trivy vulnerability shape needed for counting.
+type trivyVuln struct {
+	Severity string `json:"Severity"`
+}
+
+type trivyResultForCount struct {
+	Vulnerabilities []trivyVuln `json:"Vulnerabilities"`
+}
+
+type trivyReportForCount struct {
+	Results []trivyResultForCount `json:"Results"`
+}
+
+// CountVulnerabilities performs a single-pass count of vulnerabilities by severity
+// from a raw Trivy JSON report. It never fails on missing/null fields — missing
+// or unrecognised severities are counted as Unknown.
+func CountVulnerabilities(raw json.RawMessage) models.VulnCounts {
+	var report trivyReportForCount
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return models.VulnCounts{}
+	}
+
+	var counts models.VulnCounts
+	for _, result := range report.Results {
+		for _, v := range result.Vulnerabilities {
+			switch strings.ToUpper(strings.TrimSpace(v.Severity)) {
+			case "CRITICAL":
+				counts.Critical++
+			case "HIGH":
+				counts.High++
+			case "MEDIUM":
+				counts.Medium++
+			case "LOW":
+				counts.Low++
+			default:
+				counts.Unknown++
+			}
+		}
+	}
+	return counts
+}
 // TrivyReport represents the top-level structure of a Trivy JSON report.
 // Only the fields we care about for metadata extraction are included.
 type TrivyReport struct {
@@ -100,3 +142,64 @@ func splitNameTag(ref string) (name, tag string) {
 
 	return ref[:lastColon], potentialTag
 }
+
+// trivyFullVuln is the full Trivy vulnerability shape used for extraction.
+type trivyFullVuln struct {
+	VulnerabilityID  string `json:"VulnerabilityID"`
+	PkgName          string `json:"PkgName"`
+	InstalledVersion string `json:"InstalledVersion"`
+	FixedVersion     string `json:"FixedVersion"`
+	Severity         string `json:"Severity"`
+	Title            string `json:"Title"`
+}
+
+type trivyFullResult struct {
+	Vulnerabilities []trivyFullVuln `json:"Vulnerabilities"`
+}
+
+type trivyFullReport struct {
+	Results []trivyFullResult `json:"Results"`
+}
+
+// ExtractVulnerabilities parses all vulnerabilities from a raw Trivy JSON report
+// into a flat slice of models.Vulnerability ready for bulk database insertion.
+// ScanID is intentionally left empty — the caller fills it in after the scan row
+// has been created.
+// Never returns nil; returns an empty slice on parse failure or no vulnerabilities.
+func ExtractVulnerabilities(raw json.RawMessage) []models.Vulnerability {
+	var report trivyFullReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return []models.Vulnerability{}
+	}
+
+	var out []models.Vulnerability
+	seen := make(map[string]struct{}) // deduplicate within the same report
+
+	for _, result := range report.Results {
+		for _, v := range result.Vulnerabilities {
+			if v.VulnerabilityID == "" || v.PkgName == "" {
+				continue
+			}
+			key := v.VulnerabilityID + "|" + v.PkgName
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+
+			out = append(out, models.Vulnerability{
+				CVEID:        v.VulnerabilityID,
+				PkgName:      v.PkgName,
+				PkgVersion:   v.InstalledVersion,
+				FixedVersion: v.FixedVersion,
+				Severity:     strings.ToUpper(strings.TrimSpace(v.Severity)),
+				Title:        v.Title,
+			})
+		}
+	}
+
+	if out == nil {
+		return []models.Vulnerability{}
+	}
+	return out
+}
+

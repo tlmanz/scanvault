@@ -1,4 +1,3 @@
-package existingserver
 package main
 
 import (

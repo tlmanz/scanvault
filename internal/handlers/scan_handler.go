@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
@@ -17,7 +18,7 @@ import (
 // Store is the interface the handler layer requires from the data layer.
 // Using an interface keeps handlers decoupled from the database and testable.
 type Store interface {
-	Create(ctx context.Context, imageName, imageTag, imageDigest string, scanResult json.RawMessage) (*models.Scan, error)
+	Create(ctx context.Context, imageName, imageTag, imageDigest string, scanResult json.RawMessage, vuln models.VulnCounts, vulns []models.Vulnerability) (*models.Scan, bool, error)
 	ListByTag(ctx context.Context, tag string) ([]models.Scan, error)
 	ListByImage(ctx context.Context, imageName string) ([]models.Scan, error)
 	ListByImageWithSeverity(ctx context.Context, imageName, severity string) ([]models.Scan, error)
@@ -31,7 +32,17 @@ type paginatedStore interface {
 	ListByImageWithSeverityPage(ctx context.Context, imageName, severity string, limit, offset int) ([]models.Scan, error)
 }
 
+type analyticsStore interface {
+	ListAllPage(ctx context.Context, imageName, tag string, limit, offset int) ([]models.Scan, error)
+	VulnerabilitySummary(ctx context.Context, imageName string, from, to *time.Time) (*models.VulnerabilitySummary, error)
+	VulnerabilityTrends(ctx context.Context, imageName, bucket string, from, to *time.Time) ([]models.VulnerabilityTrendPoint, error)
+	TopCVEs(ctx context.Context, imageName, severity string, limit int, from, to *time.Time) ([]models.TopCVE, error)
+	CVEAffectedImages(ctx context.Context, cveID string) ([]models.AffectedImage, error)
+	FixableSummary(ctx context.Context, imageName string, from, to *time.Time) (*models.FixableSummary, error)
+}
+
 const maxListLimit = 500
+const defaultAllScansLimit = 100
 
 // ScanHandler holds dependencies for scan-related HTTP handlers.
 type ScanHandler struct {
@@ -89,9 +100,14 @@ func (h *ScanHandler) CreateScan(c *gin.Context) {
 		return
 	}
 
-	scan, err := h.store.Create(c.Request.Context(), meta.ImageName, meta.ImageTag, meta.ImageDigest, raw)
+	// Count vulnerabilities by severity in a single pass — stored as indexed
+	// columns so future severity queries hit the index, not the JSONB blob.
+	counts := parser.CountVulnerabilities(raw)
+	vulns := parser.ExtractVulnerabilities(raw)
+
+	scan, created, err := h.store.Create(c.Request.Context(), meta.ImageName, meta.ImageTag, meta.ImageDigest, raw, counts, vulns)
 	if err != nil {
-		h.logger.Error().Err(err).Msg("failed to create scan record")
+		h.logger.Error().Err(err).Msg("failed to upsert scan record")
 		errorResponse(c, http.StatusInternalServerError, "failed to store scan result")
 		return
 	}
@@ -100,9 +116,15 @@ func (h *ScanHandler) CreateScan(c *gin.Context) {
 		Str("id", scan.ID).
 		Str("image_name", scan.ImageName).
 		Str("image_tag", scan.ImageTag).
-		Msg("scan record created")
+		Bool("created", created).
+		Msg("scan record upserted")
 
-	c.JSON(http.StatusCreated, scan)
+	// 201 Created for new inserts, 200 OK when an existing digest record was refreshed.
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	c.JSON(status, scan)
 }
 
 // ListScans handles:
@@ -178,6 +200,115 @@ func (h *ScanHandler) ListScans(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// ListAllScans handles GET /scans/all with optional image/tag filters.
+func (h *ScanHandler) ListAllScans(c *gin.Context) {
+	limit, offset, hasPagination, pageErr := parsePagination(c)
+	if pageErr != "" {
+		errorResponse(c, http.StatusBadRequest, pageErr)
+		return
+	}
+	if !hasPagination {
+		limit = defaultAllScansLimit
+		offset = 0
+	}
+
+	store, ok := h.store.(analyticsStore)
+	if !ok {
+		errorResponse(c, http.StatusNotImplemented, "store does not support global listing")
+		return
+	}
+
+	image := strings.TrimSpace(c.Query("image"))
+	tag := strings.TrimSpace(c.Query("tag"))
+
+	scans, err := store.ListAllPage(c.Request.Context(), image, tag, limit, offset)
+	if err != nil {
+		h.logger.Error().Err(err).Str("image", image).Str("tag", tag).Msg("failed to list all scans")
+		errorResponse(c, http.StatusInternalServerError, "failed to retrieve scans")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"image":  image,
+		"tag":    tag,
+		"limit":  limit,
+		"offset": offset,
+		"count":  len(scans),
+		"items":  scans,
+	})
+}
+
+// GetVulnerabilitySummary handles GET /analytics/vulnerabilities/summary.
+func (h *ScanHandler) GetVulnerabilitySummary(c *gin.Context) {
+	store, ok := h.store.(analyticsStore)
+	if !ok {
+		errorResponse(c, http.StatusNotImplemented, "store does not support vulnerability summary")
+		return
+	}
+
+	from, to, errMsg := parseTimeRange(c)
+	if errMsg != "" {
+		errorResponse(c, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	image := strings.TrimSpace(c.Query("image"))
+	summary, err := store.VulnerabilitySummary(c.Request.Context(), image, from, to)
+	if err != nil {
+		h.logger.Error().Err(err).Str("image", image).Msg("failed to build vulnerability summary")
+		errorResponse(c, http.StatusInternalServerError, "failed to retrieve vulnerability summary")
+		return
+	}
+
+	if summary.SeverityCounts == nil {
+		summary.SeverityCounts = []models.SeverityCount{}
+	}
+
+	c.JSON(http.StatusOK, summary)
+}
+
+// GetVulnerabilityTrends handles GET /analytics/vulnerabilities/trends.
+func (h *ScanHandler) GetVulnerabilityTrends(c *gin.Context) {
+	store, ok := h.store.(analyticsStore)
+	if !ok {
+		errorResponse(c, http.StatusNotImplemented, "store does not support vulnerability trends")
+		return
+	}
+
+	bucket, errMsg := parseTrendBucket(c)
+	if errMsg != "" {
+		errorResponse(c, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	from, to, errMsg := parseTimeRange(c)
+	if errMsg != "" {
+		errorResponse(c, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	image := strings.TrimSpace(c.Query("image"))
+	points, err := store.VulnerabilityTrends(c.Request.Context(), image, bucket, from, to)
+	if err != nil {
+		h.logger.Error().Err(err).Str("image", image).Str("bucket", bucket).Msg("failed to build vulnerability trends")
+		errorResponse(c, http.StatusInternalServerError, "failed to retrieve vulnerability trends")
+		return
+	}
+
+	if points == nil {
+		points = []models.VulnerabilityTrendPoint{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"image":    image,
+		"interval": bucket,
+		"from":     from,
+		"to":       to,
+		"count":    len(points),
+		"points":   points,
+	})
 }
 
 func (h *ScanHandler) listByTag(ctx context.Context, tag string, limit, offset int, hasPagination bool) ([]models.Scan, error) {
@@ -268,6 +399,41 @@ func parsePagination(c *gin.Context) (limit, offset int, hasPagination bool, err
 	}
 
 	return limit, offset, true, ""
+}
+
+func parseTimeRange(c *gin.Context) (from, to *time.Time, errMsg string) {
+	fromRaw := strings.TrimSpace(c.Query("from"))
+	toRaw := strings.TrimSpace(c.Query("to"))
+
+	if fromRaw != "" {
+		parsed, err := time.Parse(time.RFC3339, fromRaw)
+		if err != nil {
+			return nil, nil, "query parameter 'from' must be RFC3339 (e.g. 2026-04-01T00:00:00Z)"
+		}
+		from = &parsed
+	}
+
+	if toRaw != "" {
+		parsed, err := time.Parse(time.RFC3339, toRaw)
+		if err != nil {
+			return nil, nil, "query parameter 'to' must be RFC3339 (e.g. 2026-04-30T23:59:59Z)"
+		}
+		to = &parsed
+	}
+
+	if from != nil && to != nil && from.After(*to) {
+		return nil, nil, "query parameter 'from' must be before or equal to 'to'"
+	}
+
+	return from, to, ""
+}
+
+func parseTrendBucket(c *gin.Context) (bucket, errMsg string) {
+	bucket = strings.ToLower(strings.TrimSpace(c.DefaultQuery("interval", "day")))
+	if bucket != "day" && bucket != "week" {
+		return "", "query parameter 'interval' must be 'day' or 'week'"
+	}
+	return bucket, ""
 }
 
 func applyPagination(scans []models.Scan, limit, offset int) []models.Scan {
@@ -411,4 +577,114 @@ func matchesPkg(vuln map[string]any, want string) bool {
 
 	got, _ := vuln["PkgName"].(string)
 	return strings.EqualFold(got, want)
+}
+
+// GetTopCVEs handles GET /analytics/vulnerabilities/top-cves
+//
+// Query params:
+//   - image    (optional) filter to one image
+//   - severity (optional) CRITICAL|HIGH|MEDIUM|LOW|UNKNOWN
+//   - limit    (optional, default 10, max 100)
+//   - from, to (optional RFC 3339)
+func (h *ScanHandler) GetTopCVEs(c *gin.Context) {
+	aStore, ok := h.store.(analyticsStore)
+	if !ok {
+		errorResponse(c, http.StatusNotImplemented, "analytics not available")
+		return
+	}
+
+	imageName := c.Query("image")
+	severity := strings.ToUpper(strings.TrimSpace(c.Query("severity")))
+
+	limit := 10
+	if lStr := c.Query("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
+			if l > 100 {
+				l = 100
+			}
+			limit = l
+		}
+	}
+
+	from, to, errMsg := parseTimeRange(c)
+	if errMsg != "" {
+		errorResponse(c, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	cves, err := aStore.TopCVEs(c.Request.Context(), imageName, severity, limit, from, to)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("failed to query top CVEs")
+		errorResponse(c, http.StatusInternalServerError, "failed to query top CVEs")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"image":    imageName,
+		"severity": severity,
+		"limit":    limit,
+		"count":    len(cves),
+		"from":     from,
+		"to":       to,
+		"cves":     cves,
+	})
+}
+
+// GetCVEAffectedImages handles GET /analytics/vulnerabilities/cve/:cve_id/images
+//
+// Returns all images currently exposed to the given CVE ID.
+func (h *ScanHandler) GetCVEAffectedImages(c *gin.Context) {
+	aStore, ok := h.store.(analyticsStore)
+	if !ok {
+		errorResponse(c, http.StatusNotImplemented, "analytics not available")
+		return
+	}
+
+	cveID := strings.TrimSpace(c.Param("cve_id"))
+	if cveID == "" {
+		errorResponse(c, http.StatusBadRequest, "cve_id is required")
+		return
+	}
+
+	images, err := aStore.CVEAffectedImages(c.Request.Context(), cveID)
+	if err != nil {
+		h.logger.Error().Err(err).Str("cve_id", cveID).Msg("failed to query CVE affected images")
+		errorResponse(c, http.StatusInternalServerError, "failed to query CVE affected images")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"cve_id": cveID,
+		"count":  len(images),
+		"images": images,
+	})
+}
+
+// GetFixableSummary handles GET /analytics/vulnerabilities/fixable
+//
+// Query params:
+//   - image    (optional) filter to one image
+//   - from, to (optional RFC 3339)
+func (h *ScanHandler) GetFixableSummary(c *gin.Context) {
+	aStore, ok := h.store.(analyticsStore)
+	if !ok {
+		errorResponse(c, http.StatusNotImplemented, "analytics not available")
+		return
+	}
+
+	imageName := c.Query("image")
+	from, to, errMsg := parseTimeRange(c)
+	if errMsg != "" {
+		errorResponse(c, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	summary, err := aStore.FixableSummary(c.Request.Context(), imageName, from, to)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("failed to query fixable summary")
+		errorResponse(c, http.StatusInternalServerError, "failed to query fixable summary")
+		return
+	}
+
+	c.JSON(http.StatusOK, summary)
 }

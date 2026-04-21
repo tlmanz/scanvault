@@ -22,19 +22,32 @@ func init() {
 // ── Mock Store ────────────────────────────────────────────────────────────────
 
 type mockStore struct {
-	createFn              func(ctx context.Context, name, tag, digest string, result json.RawMessage) (*models.Scan, error)
+	createFn              func(ctx context.Context, name, tag, digest string, result json.RawMessage, vuln models.VulnCounts, vulns []models.Vulnerability) (*models.Scan, bool, error)
 	listByTagFn           func(ctx context.Context, tag string) ([]models.Scan, error)
 	listByImageFn         func(ctx context.Context, image string) ([]models.Scan, error)
 	listByImageSeverityFn func(ctx context.Context, image, severity string) ([]models.Scan, error)
+	listAllPageFn         func(ctx context.Context, image, tag string, limit, offset int) ([]models.Scan, error)
+	vulnerabilitySummary  func(ctx context.Context, image string, from, to *time.Time) (*models.VulnerabilitySummary, error)
+	vulnerabilityTrends   func(ctx context.Context, image, interval string, from, to *time.Time) ([]models.VulnerabilityTrendPoint, error)
 	latestByImgFn         func(ctx context.Context, image string) (*models.Scan, error)
 	getByIDFn             func(ctx context.Context, id string) (*models.Scan, error)
 }
 
-func (m *mockStore) Create(ctx context.Context, name, tag, digest string, result json.RawMessage) (*models.Scan, error) {
+func (m *mockStore) Create(ctx context.Context, name, tag, digest string, result json.RawMessage, vuln models.VulnCounts, vulns []models.Vulnerability) (*models.Scan, bool, error) {
 	if m.createFn != nil {
-		return m.createFn(ctx, name, tag, digest, result)
+		return m.createFn(ctx, name, tag, digest, result, vuln, vulns)
 	}
-	return &models.Scan{ID: "test-id", ImageName: name, ImageTag: tag, ImageDigest: digest, ScanResult: result, CreatedAt: time.Now()}, nil
+	return &models.Scan{ID: "test-id", ImageName: name, ImageTag: tag, ImageDigest: digest, ScanResult: result, CreatedAt: time.Now()}, true, nil
+}
+
+func (m *mockStore) TopCVEs(_ context.Context, _, _ string, _ int, _, _ *time.Time) ([]models.TopCVE, error) {
+	return []models.TopCVE{}, nil
+}
+func (m *mockStore) CVEAffectedImages(_ context.Context, _ string) ([]models.AffectedImage, error) {
+	return []models.AffectedImage{}, nil
+}
+func (m *mockStore) FixableSummary(_ context.Context, _ string, _, _ *time.Time) (*models.FixableSummary, error) {
+	return &models.FixableSummary{FixableItems: []models.FixableVulnerability{}}, nil
 }
 
 func (m *mockStore) ListByTag(ctx context.Context, tag string) ([]models.Scan, error) {
@@ -65,6 +78,27 @@ func (m *mockStore) ListByImageWithSeverity(ctx context.Context, image, severity
 	return []models.Scan{}, nil
 }
 
+func (m *mockStore) ListAllPage(ctx context.Context, image, tag string, limit, offset int) ([]models.Scan, error) {
+	if m.listAllPageFn != nil {
+		return m.listAllPageFn(ctx, image, tag, limit, offset)
+	}
+	return []models.Scan{}, nil
+}
+
+func (m *mockStore) VulnerabilitySummary(ctx context.Context, image string, from, to *time.Time) (*models.VulnerabilitySummary, error) {
+	if m.vulnerabilitySummary != nil {
+		return m.vulnerabilitySummary(ctx, image, from, to)
+	}
+	return &models.VulnerabilitySummary{SeverityCounts: []models.SeverityCount{}}, nil
+}
+
+func (m *mockStore) VulnerabilityTrends(ctx context.Context, image, interval string, from, to *time.Time) ([]models.VulnerabilityTrendPoint, error) {
+	if m.vulnerabilityTrends != nil {
+		return m.vulnerabilityTrends(ctx, image, interval, from, to)
+	}
+	return []models.VulnerabilityTrendPoint{}, nil
+}
+
 func (m *mockStore) GetByID(ctx context.Context, id string) (*models.Scan, error) {
 	if m.getByIDFn != nil {
 		return m.getByIDFn(ctx, id)
@@ -80,8 +114,11 @@ func newRouter(store handlers.Store) *gin.Engine {
 	r.GET("/health", h.HealthCheck)
 	r.POST("/scans", h.CreateScan)
 	r.GET("/scans", h.ListScans)
+	r.GET("/scans/all", h.ListAllScans)
 	r.GET("/scans/:id/vulnerabilities", h.GetScanVulnerabilities)
 	r.GET("/scans/latest", h.GetLatestScan)
+	r.GET("/analytics/vulnerabilities/summary", h.GetVulnerabilitySummary)
+	r.GET("/analytics/vulnerabilities/trends", h.GetVulnerabilityTrends)
 	return r
 }
 
@@ -169,8 +206,8 @@ func TestCreateScan_InvalidJSON_Returns400(t *testing.T) {
 
 func TestCreateScan_StoreError_Returns500(t *testing.T) {
 	store := &mockStore{
-		createFn: func(_ context.Context, _, _, _ string, _ json.RawMessage) (*models.Scan, error) {
-			return nil, &testError{"db failure"}
+		createFn: func(_ context.Context, _, _, _ string, _ json.RawMessage, _ models.VulnCounts, _ []models.Vulnerability) (*models.Scan, bool, error) {
+			return nil, false, &testError{"db failure"}
 		},
 	}
 	r := newRouter(store)
@@ -294,6 +331,114 @@ func TestListScans_Pagination_FallbackStore(t *testing.T) {
 
 func TestListScans_Pagination_InvalidLimit(t *testing.T) {
 	w := doRequest(newRouter(&mockStore{}), http.MethodGet, "/scans?tag=1.25&limit=-1", "")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d", w.Code)
+	}
+}
+
+func TestListAllScans_DefaultPagination(t *testing.T) {
+	store := &mockStore{
+		listAllPageFn: func(_ context.Context, _, _ string, limit, offset int) ([]models.Scan, error) {
+			if limit != 100 {
+				t.Fatalf("limit: want 100, got %d", limit)
+			}
+			if offset != 0 {
+				t.Fatalf("offset: want 0, got %d", offset)
+			}
+			return []models.Scan{{ID: "a1"}}, nil
+		},
+	}
+
+	w := doRequest(newRouter(store), http.MethodGet, "/scans/all", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d - body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetVulnerabilitySummary_Success(t *testing.T) {
+	store := &mockStore{
+		vulnerabilitySummary: func(_ context.Context, image string, from, to *time.Time) (*models.VulnerabilitySummary, error) {
+			if image != "nginx" {
+				t.Fatalf("image: want nginx, got %q", image)
+			}
+			if from == nil || to == nil {
+				t.Fatal("expected from/to to be parsed")
+			}
+			return &models.VulnerabilitySummary{
+				Image:                image,
+				From:                 from,
+				To:                   to,
+				TotalScans:           2,
+				TotalVulnerabilities: 3,
+				SeverityCounts: []models.SeverityCount{
+					{Severity: "CRITICAL", Count: 2},
+					{Severity: "HIGH", Count: 1},
+				},
+			}, nil
+		},
+	}
+
+	path := "/analytics/vulnerabilities/summary?image=nginx&from=2026-04-01T00:00:00Z&to=2026-04-30T23:59:59Z"
+	w := doRequest(newRouter(store), http.MethodGet, path, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d - body: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		TotalScans           int64 `json:"total_scans"`
+		TotalVulnerabilities int64 `json:"total_vulnerabilities"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.TotalScans != 2 {
+		t.Errorf("total_scans: want 2, got %d", resp.TotalScans)
+	}
+	if resp.TotalVulnerabilities != 3 {
+		t.Errorf("total_vulnerabilities: want 3, got %d", resp.TotalVulnerabilities)
+	}
+}
+
+func TestGetVulnerabilitySummary_InvalidFrom_Returns400(t *testing.T) {
+	w := doRequest(newRouter(&mockStore{}), http.MethodGet, "/analytics/vulnerabilities/summary?from=not-a-time", "")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d", w.Code)
+	}
+}
+
+func TestGetVulnerabilityTrends_Success(t *testing.T) {
+	store := &mockStore{
+		vulnerabilityTrends: func(_ context.Context, image, interval string, _, _ *time.Time) ([]models.VulnerabilityTrendPoint, error) {
+			if image != "nginx" {
+				t.Fatalf("image: want nginx, got %q", image)
+			}
+			if interval != "day" {
+				t.Fatalf("interval: want day, got %q", interval)
+			}
+			return []models.VulnerabilityTrendPoint{
+				{Bucket: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC), Severity: "CRITICAL", Count: 2},
+			}, nil
+		},
+	}
+
+	w := doRequest(newRouter(store), http.MethodGet, "/analytics/vulnerabilities/trends?image=nginx&interval=day", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d - body: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Count != 1 {
+		t.Errorf("count: want 1, got %d", resp.Count)
+	}
+}
+
+func TestGetVulnerabilityTrends_InvalidInterval_Returns400(t *testing.T) {
+	w := doRequest(newRouter(&mockStore{}), http.MethodGet, "/analytics/vulnerabilities/trends?interval=month", "")
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("want 400, got %d", w.Code)
 	}

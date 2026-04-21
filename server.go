@@ -90,8 +90,14 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Server, error) {
 	router.GET("/health", h.HealthCheck)
 	router.POST("/scans", h.CreateScan)
 	router.GET("/scans", h.ListScans)
+	router.GET("/scans/all", h.ListAllScans)
 	router.GET("/scans/:id/vulnerabilities", h.GetScanVulnerabilities)
 	router.GET("/scans/latest", h.GetLatestScan)
+	router.GET("/analytics/vulnerabilities/summary", h.GetVulnerabilitySummary)
+	router.GET("/analytics/vulnerabilities/trends", h.GetVulnerabilityTrends)
+	router.GET("/analytics/vulnerabilities/top-cves", h.GetTopCVEs)
+	router.GET("/analytics/vulnerabilities/cve/:cve_id/images", h.GetCVEAffectedImages)
+	router.GET("/analytics/vulnerabilities/fixable", h.GetFixableSummary)
 
 	// Build the cleanup worker if at least one policy is enabled.
 	var cleaner *worker.Cleaner
