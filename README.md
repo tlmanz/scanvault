@@ -98,7 +98,6 @@ make run
 
 - Swagger UI: `GET /swagger`
 - OpenAPI JSON (auto-generated): `GET /swagger/openapi.json`
-- Regenerate spec file locally: `make openapi` (writes `docs/openapi.json`)
 
 ### Endpoints
 
@@ -254,10 +253,10 @@ make migrate-dry
 
 ```bash
 # Unit tests
-go test -race ./internal/parser/... ./internal/config/... ./internal/handlers/...
+go test -race ./domain/... ./infra/... ./presentation/...
 
 # Integration tests (Docker required)
-go test -race -v ./internal/repository/...
+go test -race -v ./persistence/...
 
 # Full suite
 make test
@@ -274,27 +273,29 @@ Coverage focus:
 
 ```text
 scanvault/
-├── cmd/server/main.go              # Executable entrypoint
-├── internal/
-│   ├── config/config.go            # Environment config loading
-│   ├── db/db.go                    # pgx/v5 pool setup
-│   ├── handlers/scan_handler.go    # HTTP handlers
-│   ├── parser/trivy.go             # Trivy JSON parsing
-│   ├── repository/scan_repo.go     # SQL data access and analytics
-│   ├── service/server.go           # Service lifecycle bootstrap
-│   ├── service/migrate.go          # Embedded goose migration runner
-│   ├── service/logger.go           # Logger setup from config
-│   └── worker/cleanup.go           # Background cleanup worker
-├── migrations/
-│   ├── 001_create_scans.sql
-│   ├── 002_add_scan_result_gin_index.sql
-│   ├── 003_add_vuln_summary.sql
-│   ├── 004_upsert_digest_index.sql
-│   ├── 005_create_vulnerabilities.sql
-│   └── embed.go
-├── models/
-│   ├── scan.go
-│   └── vulnerability.go
+├── main.go                         # Executable entrypoint
+├── domain/                         # Core business logic and entities
+│   ├── boundary/                   # Interfaces defining infrastructure contracts
+│   ├── entities/                   # Domain models
+│   ├── parser/                     # Pure logic for Trivy parsing
+│   └── usecases/                   # Application-specific business rules
+├── infra/                          # Cross-cutting concerns
+│   ├── config.go                   # Environment configuration
+│   ├── container.go                # IoC container and dependency wiring
+│   ├── lifecycle.go                # Graceful shutdown handler
+│   └── logger.go                   # Logger initialization
+├── persistence/postgres/           # Database implementations
+│   ├── db.go                       # Connection pooling
+│   ├── migrate.go                  # Embedded Goose migrations
+│   └── scan_repository.go          # Implements domain/boundary interfaces
+├── presentation/rest/              # HTTP delivery mechanisms
+│   ├── controller_analytics.go     # Analytics endpoints
+│   ├── controller_scan.go          # CRUD endpoints
+│   ├── requests.go                 # DTO definitions
+│   ├── responses.go                # DTO definitions
+│   ├── routes.go                   # OpenAPI route registration
+│   └── server.go                   # HTTP server lifecycle
+├── migrations/                     # Raw SQL migration files
 ├── postman/ScanVault.postman_collection.json
 ├── Dockerfile
 ├── docker-compose.yml
