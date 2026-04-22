@@ -1,5 +1,5 @@
 # ── Build stage ────────────────────────────────────────────────────────────────
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Install build dependencies (cgo is disabled so only native Go is needed).
 RUN apk add --no-cache git
