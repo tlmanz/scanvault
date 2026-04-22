@@ -27,7 +27,7 @@ func TestGetVulnerabilitySummary_Success(t *testing.T) {
 		t.Fatalf("want 200, got %d - body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		TotalScans int64 `json:"total_scans"`
+		TotalScans int64 `json:"TotalScans"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -83,8 +83,8 @@ func TestGetTopCVEs_Success(t *testing.T) {
 		t.Fatalf("want 200, got %d - body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Count int `json:"count"`
-		Limit int `json:"limit"`
+		Count int `json:"Count"`
+		Limit int `json:"Limit"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -114,8 +114,8 @@ func TestGetCVEAffectedImages_Success(t *testing.T) {
 		t.Fatalf("want 200, got %d - body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		CVEID string `json:"cve_id"`
-		Count int    `json:"count"`
+		CVEID string `json:"CVEID"`
+		Count int    `json:"Count"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -145,9 +145,9 @@ func TestGetFixableSummary_Success(t *testing.T) {
 		t.Fatalf("want 200, got %d - body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		TotalVulns int64   `json:"total_vulns"`
-		Fixable    int64   `json:"fixable"`
-		FixablePct float64 `json:"fixable_pct"`
+		TotalVulns int64   `json:"TotalVulns"`
+		Fixable    int64   `json:"Fixable"`
+		FixablePct float64 `json:"FixablePct"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)

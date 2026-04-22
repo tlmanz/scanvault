@@ -1,6 +1,8 @@
 package rest
 
-import "time"
+import (
+	"time"
+)
 
 // HealthResponse is the response envelope for health checks.
 type HealthResponse struct {
@@ -9,138 +11,182 @@ type HealthResponse struct {
 
 // ScanResponseDTO is the API response DTO for one scan.
 type ScanResponseDTO struct {
-	ID           string         `json:"id"`
-	ImageName    string         `json:"image_name"`
-	ImageTag     string         `json:"image_tag"`
-	ImageDigest  string         `json:"image_digest"`
-	ScanResult   TrivyReportDTO `json:"scan_result"`
-	CreatedAt    time.Time      `json:"created_at"`
-	VulnCritical int            `json:"vuln_critical"`
-	VulnHigh     int            `json:"vuln_high"`
-	VulnMedium   int            `json:"vuln_medium"`
-	VulnLow      int            `json:"vuln_low"`
-	VulnUnknown  int            `json:"vuln_unknown"`
+	ID           string                 `json:"ID"`
+	ImageName    string                 `json:"ImageName"`
+	ImageTag     string                 `json:"ImageTag"`
+	ImageDigest  string                 `json:"ImageDigest"`
+	ScanResult   TrivyReportResponseDTO `json:"ScanResult"`
+	CreatedAt    time.Time              `json:"CreatedAt"`
+	VulnCritical int                    `json:"VulnCritical"`
+	VulnHigh     int                    `json:"VulnHigh"`
+	VulnMedium   int                    `json:"VulnMedium"`
+	VulnLow      int                    `json:"VulnLow"`
+	VulnUnknown  int                    `json:"VulnUnknown"`
+}
+
+// TrivyVulnerabilityResponseDTO represents one vulnerability in scan_result responses.
+type TrivyVulnerabilityResponseDTO struct {
+	VulnerabilityID string `json:"VulnerabilityID"`
+	PkgName         string `json:"PkgName"`
+	PkgVersion      string `json:"PkgVersion,omitempty"`
+	FixedVersion    string `json:"FixedVersion,omitempty"`
+	Severity        string `json:"Severity"`
+	Title           string `json:"Title,omitempty"`
+}
+
+// TrivyResultResponseDTO represents one Trivy result section in scan_result responses.
+type TrivyResultResponseDTO struct {
+	Target          string                          `json:"Target,omitempty"`
+	Class           string                          `json:"Class,omitempty"`
+	Type            string                          `json:"Type,omitempty"`
+	Vulnerabilities []TrivyVulnerabilityResponseDTO `json:"Vulnerabilities,omitempty"`
+}
+
+// TrivyMetadataResponseDTO represents image metadata in scan_result responses.
+type TrivyMetadataResponseDTO struct {
+	ImageID     string   `json:"ImageID,omitempty"`
+	RepoTags    []string `json:"RepoTags,omitempty"`
+	RepoDigests []string `json:"RepoDigests,omitempty"`
+}
+
+// TrivyReportResponseDTO represents scan_result in GET scan responses.
+type TrivyReportResponseDTO struct {
+	ArtifactName string                   `json:"ArtifactName,omitempty"`
+	ArtifactType string                   `json:"ArtifactType,omitempty"`
+	Metadata     TrivyMetadataResponseDTO `json:"Metadata,omitempty"`
+	Results      []TrivyResultResponseDTO `json:"Results,omitempty"`
 }
 
 // ScansListResponseDTO is the API response DTO for scan lists.
 type ScansListResponseDTO struct {
-	Image    string            `json:"image,omitempty"`
-	Tag      string            `json:"tag,omitempty"`
-	Severity string            `json:"severity,omitempty"`
-	Count    int               `json:"count"`
-	Limit    int               `json:"limit,omitempty"`
-	Offset   int               `json:"offset,omitempty"`
-	Items    []ScanResponseDTO `json:"items"`
+	Image    string            `json:"Image,omitempty"`
+	Tag      string            `json:"Tag,omitempty"`
+	Severity string            `json:"Severity,omitempty"`
+	Count    int               `json:"Count"`
+	Limit    int               `json:"Limit,omitempty"`
+	Offset   int               `json:"Offset,omitempty"`
+	Items    []ScanResponseDTO `json:"Items"`
 }
 
 // ScanVulnerabilityItemDTO is one vulnerability item in a scan vulnerability response.
 type ScanVulnerabilityItemDTO struct {
-	Target        string                `json:"target"`
-	Class         string                `json:"class,omitempty"`
-	Type          string                `json:"type,omitempty"`
-	Vulnerability TrivyVulnerabilityDTO `json:"vulnerability"`
+	Target        string                     `json:"Target"`
+	Class         string                     `json:"Class,omitempty"`
+	Type          string                     `json:"Type,omitempty"`
+	Vulnerability ScanVulnerabilityDetailDTO `json:"Vulnerability"`
+}
+
+// ScanVulnerabilityDetailDTO is one vulnerability detail returned by GET /scans/:id/vulnerabilities.
+type ScanVulnerabilityDetailDTO struct {
+	VulnerabilityID string `json:"VulnerabilityID"`
+	PkgName         string `json:"PkgName"`
+	PkgVersion      string `json:"PkgVersion,omitempty"`
+	CurrentVersion  string `json:"CurrentVersion,omitempty"`
+	FixedVersion    string `json:"FixedVersion,omitempty"`
+	Severity        string `json:"Severity"`
+	Title           string `json:"Title,omitempty"`
 }
 
 // ScanVulnerabilitiesResponseDTO is the API response DTO for GET /scans/:id/vulnerabilities.
 type ScanVulnerabilitiesResponseDTO struct {
-	ScanID    string                     `json:"scan_id"`
-	ImageName string                     `json:"image_name"`
-	ImageTag  string                     `json:"image_tag"`
-	Severity  string                     `json:"severity,omitempty"`
-	Pkg       string                     `json:"pkg,omitempty"`
-	Count     int                        `json:"count"`
-	Items     []ScanVulnerabilityItemDTO `json:"items"`
+	ScanID    string                     `json:"ScanID"`
+	ImageName string                     `json:"ImageName"`
+	ImageTag  string                     `json:"ImageTag"`
+	Severity  string                     `json:"Severity,omitempty"`
+	Pkg       string                     `json:"Pkg,omitempty"`
+	Count     int                        `json:"Count"`
+	Items     []ScanVulnerabilityItemDTO `json:"Items"`
 }
 
 // SeverityCountDTO is one aggregate severity bucket for analytics.
 type SeverityCountDTO struct {
-	Severity string `json:"severity"`
-	Count    int64  `json:"count"`
+	Severity string `json:"Severity"`
+	Count    int64  `json:"Count"`
 }
 
 // VulnerabilityTrendPointDTO is one bucketed vulnerability count.
 type VulnerabilityTrendPointDTO struct {
-	Bucket   time.Time `json:"bucket"`
-	Severity string    `json:"severity"`
-	Count    int64     `json:"count"`
+	Bucket   time.Time `json:"Bucket"`
+	Severity string    `json:"Severity"`
+	Count    int64     `json:"Count"`
 }
 
 // TopCVEDTO is a CVE aggregated across latest scans.
 type TopCVEDTO struct {
-	CVEID      string `json:"cve_id"`
-	Severity   string `json:"severity"`
-	Title      string `json:"title,omitempty"`
-	ImageCount int64  `json:"image_count"`
-	Fixable    bool   `json:"fixable"`
+	CVEID      string `json:"CVEID"`
+	Severity   string `json:"Severity"`
+	Title      string `json:"Title,omitempty"`
+	ImageCount int64  `json:"ImageCount"`
+	Fixable    bool   `json:"Fixable"`
 }
 
 // AffectedImageDTO is one image affected by a specific CVE.
 type AffectedImageDTO struct {
-	ImageName    string    `json:"image_name"`
-	ImageTag     string    `json:"image_tag"`
-	PkgName      string    `json:"pkg_name"`
-	PkgVersion   string    `json:"pkg_version,omitempty"`
-	FixedVersion string    `json:"fixed_version,omitempty"`
-	ScannedAt    time.Time `json:"scanned_at"`
+	ImageName    string    `json:"ImageName"`
+	ImageTag     string    `json:"ImageTag"`
+	PkgName      string    `json:"PkgName"`
+	PkgVersion   string    `json:"PkgVersion,omitempty"`
+	FixedVersion string    `json:"FixedVersion,omitempty"`
+	ScannedAt    time.Time `json:"ScannedAt"`
 }
 
 // FixableVulnerabilityDTO is one vulnerability with a known fix.
 type FixableVulnerabilityDTO struct {
-	CVEID        string `json:"cve_id"`
-	PkgName      string `json:"pkg_name"`
-	PkgVersion   string `json:"pkg_version,omitempty"`
-	FixedVersion string `json:"fixed_version"`
-	Severity     string `json:"severity"`
-	Title        string `json:"title,omitempty"`
-	ImageName    string `json:"image_name"`
-	ImageTag     string `json:"image_tag"`
+	CVEID        string `json:"CVEID"`
+	PkgName      string `json:"PkgName"`
+	PkgVersion   string `json:"PkgVersion,omitempty"`
+	FixedVersion string `json:"FixedVersion"`
+	Severity     string `json:"Severity"`
+	Title        string `json:"Title,omitempty"`
+	ImageName    string `json:"ImageName"`
+	ImageTag     string `json:"ImageTag"`
 }
 
 // VulnerabilitySummaryResponseDTO is the API response DTO for summary analytics.
 type VulnerabilitySummaryResponseDTO struct {
-	Image                string             `json:"image,omitempty"`
-	From                 *time.Time         `json:"from,omitempty"`
-	To                   *time.Time         `json:"to,omitempty"`
-	TotalScans           int64              `json:"total_scans"`
-	TotalVulnerabilities int64              `json:"total_vulnerabilities"`
-	SeverityCounts       []SeverityCountDTO `json:"severity_counts"`
-	TopCVEs              []TopCVEDTO        `json:"top_cves,omitempty"`
+	Image                string             `json:"Image,omitempty"`
+	From                 *time.Time         `json:"From,omitempty"`
+	To                   *time.Time         `json:"To,omitempty"`
+	TotalScans           int64              `json:"TotalScans"`
+	TotalVulnerabilities int64              `json:"TotalVulnerabilities"`
+	SeverityCounts       []SeverityCountDTO `json:"SeverityCounts"`
+	TopCVEs              []TopCVEDTO        `json:"TopCVEs,omitempty"`
 }
 
 // VulnerabilityTrendsResponseDTO is the API response DTO for trends analytics.
 type VulnerabilityTrendsResponseDTO struct {
-	Image    string                       `json:"image,omitempty"`
-	Interval string                       `json:"interval"`
-	From     *time.Time                   `json:"from,omitempty"`
-	To       *time.Time                   `json:"to,omitempty"`
-	Count    int                          `json:"count"`
-	Points   []VulnerabilityTrendPointDTO `json:"points"`
+	Image    string                       `json:"Image,omitempty"`
+	Interval string                       `json:"Interval"`
+	From     *time.Time                   `json:"From,omitempty"`
+	To       *time.Time                   `json:"To,omitempty"`
+	Count    int                          `json:"Count"`
+	Points   []VulnerabilityTrendPointDTO `json:"Points"`
 }
 
 // TopCVEsResponseDTO is the API response DTO for top CVE analytics.
 type TopCVEsResponseDTO struct {
-	Image    string      `json:"image,omitempty"`
-	Severity string      `json:"severity,omitempty"`
-	Limit    int         `json:"limit"`
-	From     *time.Time  `json:"from,omitempty"`
-	To       *time.Time  `json:"to,omitempty"`
-	Count    int         `json:"count"`
-	CVEs     []TopCVEDTO `json:"cves"`
+	Image    string      `json:"Image,omitempty"`
+	Severity string      `json:"Severity,omitempty"`
+	Limit    int         `json:"Limit"`
+	From     *time.Time  `json:"From,omitempty"`
+	To       *time.Time  `json:"To,omitempty"`
+	Count    int         `json:"Count"`
+	CVEs     []TopCVEDTO `json:"CVEs"`
 }
 
 // CVEAffectedImagesResponseDTO is the API response DTO for CVE affected images.
 type CVEAffectedImagesResponseDTO struct {
-	CVEID  string             `json:"cve_id"`
-	Count  int                `json:"count"`
-	Images []AffectedImageDTO `json:"images"`
+	CVEID  string             `json:"CVEID"`
+	Count  int                `json:"Count"`
+	Images []AffectedImageDTO `json:"Images"`
 }
 
 // FixableSummaryResponseDTO is the API response DTO for fixable analytics.
 type FixableSummaryResponseDTO struct {
-	Image        string                    `json:"image,omitempty"`
-	TotalVulns   int64                     `json:"total_vulns"`
-	Fixable      int64                     `json:"fixable"`
-	NotFixable   int64                     `json:"not_fixable"`
-	FixablePct   float64                   `json:"fixable_pct"`
-	FixableItems []FixableVulnerabilityDTO `json:"fixable_items"`
+	Image        string                    `json:"Image,omitempty"`
+	TotalVulns   int64                     `json:"TotalVulns"`
+	Fixable      int64                     `json:"Fixable"`
+	NotFixable   int64                     `json:"NotFixable"`
+	FixablePct   float64                   `json:"FixablePct"`
+	FixableItems []FixableVulnerabilityDTO `json:"FixableItems"`
 }

@@ -137,7 +137,7 @@ func TestGetLatestScan_Success(t *testing.T) {
 }
 
 func TestGetScanVulnerabilities_Success(t *testing.T) {
-	scanRaw := json.RawMessage(`{"Results":[{"Target":"alpine","Class":"os-pkgs","Type":"alpine","Vulnerabilities":[{"VulnerabilityID":"CVE-1","Severity":"HIGH","PkgName":"openssl"},{"VulnerabilityID":"CVE-2","Severity":"LOW","PkgName":"busybox"}]}]}`)
+	scanRaw := json.RawMessage(`{"Results":[{"Target":"alpine","Class":"os-pkgs","Type":"alpine","Vulnerabilities":[{"VulnerabilityID":"CVE-1","Severity":"HIGH","PkgName":"openssl","InstalledVersion":"1.1.1"},{"VulnerabilityID":"CVE-2","Severity":"LOW","PkgName":"busybox","InstalledVersion":"1.35.0"}]}]}`)
 	repo := &stubRepo{
 		getByIDFn: func(_ context.Context, id string) (*entities.Scan, error) {
 			return &entities.Scan{ID: id, ImageName: "nginx", ImageTag: "1.25", ScanResult: scanRaw}, nil
@@ -148,13 +148,24 @@ func TestGetScanVulnerabilities_Success(t *testing.T) {
 		t.Fatalf("want 200, got %d - body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Count int `json:"count"`
+		Count int `json:"Count"`
+		Items []struct {
+			Vulnerability struct {
+				PkgVersion string `json:"PkgVersion"`
+			} `json:"Vulnerability"`
+		} `json:"Items"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if resp.Count != 1 {
 		t.Errorf("count: want 1, got %d", resp.Count)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("items: want 1, got %d", len(resp.Items))
+	}
+	if resp.Items[0].Vulnerability.PkgVersion != "1.1.1" {
+		t.Fatalf("pkg_version: want 1.1.1, got %q", resp.Items[0].Vulnerability.PkgVersion)
 	}
 }
 

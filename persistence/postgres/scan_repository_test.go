@@ -245,6 +245,38 @@ func TestCreate_VulnCountsPopulated(t *testing.T) {
 	}
 }
 
+func TestCreate_DedupesVulnerabilityCatalogAcrossScans(t *testing.T) {
+	pool := setupDB(t)
+	repo := postgres.NewScanRepository(pool)
+	ctx := context.Background()
+
+	raw := json.RawMessage(`{
+		"Results":[
+			{"Vulnerabilities":[
+				{"VulnerabilityID":"CVE-1","Severity":"HIGH","PkgName":"openssl","InstalledVersion":"1.1.1","FixedVersion":"1.1.2"}
+			]}
+		]
+	}`)
+
+	mustCreate(t, repo, ctx, "nginx", "1.25", "sha256:one", raw)
+	mustCreate(t, repo, ctx, "nginx", "1.26", "sha256:two", raw)
+
+	var catalogCount, linkCount int64
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM vulnerabilities`).Scan(&catalogCount); err != nil {
+		t.Fatalf("count vulnerabilities catalog: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM scan_vulnerabilities`).Scan(&linkCount); err != nil {
+		t.Fatalf("count scan vulnerabilities: %v", err)
+	}
+
+	if catalogCount != 1 {
+		t.Fatalf("vulnerability catalog count: want 1, got %d", catalogCount)
+	}
+	if linkCount != 2 {
+		t.Fatalf("scan vulnerability link count: want 2, got %d", linkCount)
+	}
+}
+
 func TestListByImageWithSeverity(t *testing.T) {
 	pool := setupDB(t)
 	repo := postgres.NewScanRepository(pool)

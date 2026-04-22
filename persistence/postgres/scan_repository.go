@@ -55,6 +55,13 @@ func (r *ScanRepository) Create(ctx context.Context, imageName, imageTag, imageD
 	var rawJSON []byte
 	var wasInserted bool
 
+	const vulnUpsertQuery = `
+		INSERT INTO vulnerabilities (cve_id, pkg_name, pkg_version)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (cve_id, pkg_name, pkg_version)
+		DO UPDATE SET pkg_name = EXCLUDED.pkg_name
+		RETURNING id`
+
 	row := tx.QueryRow(ctx, upsertQuery,
 		imageName, imageTag, imageDigest, []byte(scanResult),
 		vuln.Critical, vuln.High, vuln.Medium, vuln.Low, vuln.Unknown)
@@ -68,24 +75,45 @@ func (r *ScanRepository) Create(ctx context.Context, imageName, imageTag, imageD
 	}
 	scan.ScanResult = json.RawMessage(rawJSON)
 
-	// Replace vulnerability rows for this scan.
-	if _, err := tx.Exec(ctx, `DELETE FROM vulnerabilities WHERE scan_id = $1`, scan.ID); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM scan_vulnerabilities WHERE scan_id = $1`, scan.ID); err != nil {
 		return nil, false, fmt.Errorf("clearing old vulnerabilities: %w", err)
 	}
 
 	if len(vulns) > 0 {
-		rows := make([][]any, len(vulns))
-		for i, v := range vulns {
-			rows[i] = []any{scan.ID, v.CVEID, v.PkgName, v.PkgVersion, v.FixedVersion, v.Severity, v.Title}
+		batch := &pgx.Batch{}
+		for _, v := range vulns {
+			batch.Queue(vulnUpsertQuery, v.CVEID, v.PkgName, v.PkgVersion)
 		}
-		_, err = tx.CopyFrom(
-			ctx,
-			pgx.Identifier{"vulnerabilities"},
-			[]string{"scan_id", "cve_id", "pkg_name", "pkg_version", "fixed_version", "severity", "title"},
-			pgx.CopyFromRows(rows),
-		)
-		if err != nil {
-			return nil, false, fmt.Errorf("bulk inserting vulnerabilities: %w", err)
+		results := tx.SendBatch(ctx, batch)
+
+		seen := make(map[string]struct{}, len(vulns))
+		linkRows := make([][]any, 0, len(vulns))
+		for _, v := range vulns {
+			var vulnerabilityID string
+			if err := results.QueryRow().Scan(&vulnerabilityID); err != nil {
+				_ = results.Close()
+				return nil, false, fmt.Errorf("upserting vulnerability catalog: %w", err)
+			}
+			if _, ok := seen[vulnerabilityID]; ok {
+				continue
+			}
+			seen[vulnerabilityID] = struct{}{}
+			linkRows = append(linkRows, []any{scan.ID, vulnerabilityID, v.Severity, v.FixedVersion, v.Title})
+		}
+		if err := results.Close(); err != nil {
+			return nil, false, fmt.Errorf("closing vulnerability batch: %w", err)
+		}
+
+		if len(linkRows) > 0 {
+			_, err = tx.CopyFrom(
+				ctx,
+				pgx.Identifier{"scan_vulnerabilities"},
+				[]string{"scan_id", "vulnerability_id", "severity", "fixed_version", "title"},
+				pgx.CopyFromRows(linkRows),
+			)
+			if err != nil {
+				return nil, false, fmt.Errorf("bulk inserting vulnerabilities: %w", err)
+			}
 		}
 	}
 
@@ -356,14 +384,15 @@ func (r *ScanRepository) TopCVEs(ctx context.Context, imageName, severity string
 		)
 		SELECT
 			v.cve_id,
-			v.severity,
-			MAX(v.title)                                  AS title,
+			sv.severity,
+			MAX(sv.title)                                 AS title,
 			COUNT(DISTINCT ls.image_name)                 AS image_count,
-			bool_or(v.fixed_version != '')                AS fixable
-		FROM vulnerabilities v
-		JOIN latest_scans ls ON ls.id = v.scan_id
-		WHERE ($2 = '' OR v.severity = UPPER($2))
-		GROUP BY v.cve_id, v.severity
+			bool_or(sv.fixed_version != '')               AS fixable
+		FROM scan_vulnerabilities sv
+		JOIN vulnerabilities v ON v.id = sv.vulnerability_id
+		JOIN latest_scans ls ON ls.id = sv.scan_id
+		WHERE ($2 = '' OR sv.severity = UPPER($2))
+		GROUP BY v.cve_id, sv.severity
 		ORDER BY image_count DESC, v.cve_id ASC
 		LIMIT $5`
 
@@ -401,10 +430,11 @@ func (r *ScanRepository) CVEAffectedImages(ctx context.Context, cveID string) ([
 			ls.image_tag,
 			v.pkg_name,
 			v.pkg_version,
-			v.fixed_version,
+			sv.fixed_version,
 			ls.created_at
-		FROM vulnerabilities v
-		JOIN latest_scans ls ON ls.id = v.scan_id
+		FROM scan_vulnerabilities sv
+		JOIN vulnerabilities v ON v.id = sv.vulnerability_id
+		JOIN latest_scans ls ON ls.id = sv.scan_id
 		WHERE v.cve_id = $1
 		ORDER BY ls.image_name, ls.image_tag`
 
@@ -448,10 +478,10 @@ func (r *ScanRepository) FixableSummary(ctx context.Context, imageName string, f
 		)
 		SELECT
 			COUNT(*)                                   AS total_vulns,
-			COUNT(*) FILTER (WHERE v.fixed_version != '') AS fixable,
-			COUNT(*) FILTER (WHERE v.fixed_version =  '') AS not_fixable
-		FROM vulnerabilities v
-		JOIN latest_scans ls ON ls.id = v.scan_id`
+			COUNT(*) FILTER (WHERE sv.fixed_version != '') AS fixable,
+			COUNT(*) FILTER (WHERE sv.fixed_version =  '') AS not_fixable
+		FROM scan_vulnerabilities sv
+		JOIN latest_scans ls ON ls.id = sv.scan_id`
 
 	if err := r.pool.QueryRow(ctx, query, imageName, fromArg, toArg).Scan(
 		&summary.TotalVulns, &summary.Fixable, &summary.NotFixable,
@@ -474,13 +504,14 @@ func (r *ScanRepository) FixableSummary(ctx context.Context, imageName string, f
 			ORDER BY s.image_name, s.image_tag, s.created_at DESC
 		)
 		SELECT
-			v.cve_id, v.pkg_name, v.pkg_version, v.fixed_version,
-			v.severity, v.title, ls.image_name, ls.image_tag
-		FROM vulnerabilities v
-		JOIN latest_scans ls ON ls.id = v.scan_id
-		WHERE v.fixed_version != ''
+			v.cve_id, v.pkg_name, v.pkg_version, sv.fixed_version,
+			sv.severity, sv.title, ls.image_name, ls.image_tag
+		FROM scan_vulnerabilities sv
+		JOIN vulnerabilities v ON v.id = sv.vulnerability_id
+		JOIN latest_scans ls ON ls.id = sv.scan_id
+		WHERE sv.fixed_version != ''
 		ORDER BY
-			CASE v.severity
+			CASE sv.severity
 				WHEN 'CRITICAL' THEN 1
 				WHEN 'HIGH'     THEN 2
 				WHEN 'MEDIUM'   THEN 3

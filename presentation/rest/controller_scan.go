@@ -327,14 +327,38 @@ func parseTimeRange(c *gin.Context) (from, to *time.Time, errMsg string) {
 // ─── Vulnerability extraction (from stored JSONB) ─────────────────────────────
 
 type trivyResult struct {
-	Target          string                  `json:"Target"`
-	Class           string                  `json:"Class"`
-	Type            string                  `json:"Type"`
-	Vulnerabilities []TrivyVulnerabilityDTO `json:"Vulnerabilities"`
+	Target          string                      `json:"Target"`
+	Class           string                      `json:"Class"`
+	Type            string                      `json:"Type"`
+	Vulnerabilities []trivyScanVulnerabilityDTO `json:"Vulnerabilities"`
+}
+
+type trivyScanVulnerabilityDTO struct {
+	VulnerabilityID  string `json:"VulnerabilityID"`
+	PkgName          string `json:"PkgName"`
+	InstalledVersion string `json:"InstalledVersion,omitempty"`
+	PkgVersion       string `json:"PkgVersion,omitempty"`
+	FixedVersion     string `json:"FixedVersion,omitempty"`
+	Severity         string `json:"Severity"`
+	Title            string `json:"Title,omitempty"`
 }
 
 type trivyReport struct {
 	Results []trivyResult `json:"Results"`
+}
+
+type trivyReportForResponse struct {
+	ArtifactName string                   `json:"ArtifactName"`
+	ArtifactType string                   `json:"ArtifactType"`
+	Metadata     TrivyMetadataResponseDTO `json:"Metadata"`
+	Results      []trivyResultForResponse `json:"Results"`
+}
+
+type trivyResultForResponse struct {
+	Target          string                      `json:"Target"`
+	Class           string                      `json:"Class"`
+	Type            string                      `json:"Type"`
+	Vulnerabilities []trivyScanVulnerabilityDTO `json:"Vulnerabilities"`
 }
 
 func extractVulnerabilities(raw json.RawMessage, severity, pkg string) ([]ScanVulnerabilityItemDTO, error) {
@@ -349,11 +373,20 @@ func extractVulnerabilities(raw json.RawMessage, severity, pkg string) ([]ScanVu
 			if !matchesSeverity(vuln, severity) || !matchesPkg(vuln, pkg) {
 				continue
 			}
+			currentVersion := firstNonEmpty(vuln.InstalledVersion, vuln.PkgVersion)
 			out = append(out, ScanVulnerabilityItemDTO{
-				Target:        result.Target,
-				Class:         result.Class,
-				Type:          result.Type,
-				Vulnerability: vuln,
+				Target: result.Target,
+				Class:  result.Class,
+				Type:   result.Type,
+				Vulnerability: ScanVulnerabilityDetailDTO{
+					VulnerabilityID: vuln.VulnerabilityID,
+					PkgName:         vuln.PkgName,
+					PkgVersion:      currentVersion,
+					CurrentVersion:  currentVersion,
+					FixedVersion:    vuln.FixedVersion,
+					Severity:        vuln.Severity,
+					Title:           vuln.Title,
+				},
 			})
 		}
 	}
@@ -363,12 +396,21 @@ func extractVulnerabilities(raw json.RawMessage, severity, pkg string) ([]ScanVu
 	return out, nil
 }
 
-func matchesSeverity(vuln TrivyVulnerabilityDTO, want string) bool {
+func matchesSeverity(vuln trivyScanVulnerabilityDTO, want string) bool {
 	return want == "" || strings.EqualFold(vuln.Severity, want)
 }
 
-func matchesPkg(vuln TrivyVulnerabilityDTO, want string) bool {
+func matchesPkg(vuln trivyScanVulnerabilityDTO, want string) bool {
 	return want == "" || strings.EqualFold(vuln.PkgName, want)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // ─── DTO mappers ──────────────────────────────────────────────────────────────
@@ -377,9 +419,9 @@ func toScanResponseDTO(scan *entities.Scan) ScanResponseDTO {
 	if scan == nil {
 		return ScanResponseDTO{}
 	}
-	var report TrivyReportDTO
+	report := TrivyReportResponseDTO{}
 	if len(scan.ScanResult) > 0 {
-		_ = json.Unmarshal(scan.ScanResult, &report)
+		report = mapScanResultToResponse(scan.ScanResult)
 	}
 	return ScanResponseDTO{
 		ID:           scan.ID,
@@ -393,6 +435,42 @@ func toScanResponseDTO(scan *entities.Scan) ScanResponseDTO {
 		VulnMedium:   scan.VulnMedium,
 		VulnLow:      scan.VulnLow,
 		VulnUnknown:  scan.VulnUnknown,
+	}
+}
+
+func mapScanResultToResponse(raw json.RawMessage) TrivyReportResponseDTO {
+	var source trivyReportForResponse
+	if err := json.Unmarshal(raw, &source); err != nil {
+		return TrivyReportResponseDTO{}
+	}
+
+	results := make([]TrivyResultResponseDTO, 0, len(source.Results))
+	for _, result := range source.Results {
+		vulns := make([]TrivyVulnerabilityResponseDTO, 0, len(result.Vulnerabilities))
+		for _, vuln := range result.Vulnerabilities {
+			currentVersion := firstNonEmpty(vuln.InstalledVersion, vuln.PkgVersion)
+			vulns = append(vulns, TrivyVulnerabilityResponseDTO{
+				VulnerabilityID: vuln.VulnerabilityID,
+				PkgName:         vuln.PkgName,
+				PkgVersion:      currentVersion,
+				FixedVersion:    vuln.FixedVersion,
+				Severity:        vuln.Severity,
+				Title:           vuln.Title,
+			})
+		}
+		results = append(results, TrivyResultResponseDTO{
+			Target:          result.Target,
+			Class:           result.Class,
+			Type:            result.Type,
+			Vulnerabilities: vulns,
+		})
+	}
+
+	return TrivyReportResponseDTO{
+		ArtifactName: source.ArtifactName,
+		ArtifactType: source.ArtifactType,
+		Metadata:     source.Metadata,
+		Results:      results,
 	}
 }
 
