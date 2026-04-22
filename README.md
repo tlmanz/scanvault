@@ -1,3 +1,10 @@
+[![CI](https://github.com/tlmanz/scanvault/actions/workflows/ci.yml/badge.svg)](https://github.com/tlmanz/scanvault/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/tlmanz/scanvault/actions/workflows/codequality.yml/badge.svg)](https://github.com/tlmanz/scanvault/actions/workflows/codequality.yml)
+[![Coverage Status](https://coveralls.io/repos/github/tlmanz/scanvault/badge.svg)](https://coveralls.io/github/tlmanz/scanvault)
+![Open Issues](https://img.shields.io/github/issues/tlmanz/scanvault)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tlmanz/scanvault)](https://goreportcard.com/report/github.com/tlmanz/scanvault)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/tlmanz/scanvault)
+
 # ScanVault
 
 A production-ready Go microservice that ingests [Trivy](https://github.com/aquasecurity/trivy) container image scan results and persists them in PostgreSQL for querying, deduplication, and historical analysis.
