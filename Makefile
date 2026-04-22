@@ -9,7 +9,7 @@ export
 # Build output
 BINARY     := scanvault
 BUILD_DIR  := bin
-CMD_PATH   := ./cmd/server
+CMD_PATH   := .
 
 # Docker Compose
 COMPOSE    := docker compose
@@ -57,6 +57,8 @@ test: ## Run tests with race + coverage (test packages only)
 
 test-verbose: ## Run all tests with verbose output
 	go test -race -v ./...
+
+
 
 # ── Database / Goose ─────────────────────────────────────────────────────────
 

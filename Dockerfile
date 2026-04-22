@@ -13,7 +13,7 @@ RUN go mod download
 # Copy source and build a statically linked binary.
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-w -s" -o /scanvault ./cmd/server
+    go build -ldflags="-w -s" -o /scanvault .
 
 # ── Runtime stage ───────────────────────────────────────────────────────────────
 FROM gcr.io/distroless/static:nonroot
