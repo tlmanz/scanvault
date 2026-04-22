@@ -1,6 +1,6 @@
 # ScanVault
 
-A production-ready Go microservice — and **importable library** — that ingests [Trivy](https://github.com/aquasecurity/trivy) container image scan results and persists them in PostgreSQL for querying, deduplication, and historical analysis.
+A production-ready Go microservice that ingests [Trivy](https://github.com/aquasecurity/trivy) container image scan results and persists them in PostgreSQL for querying, deduplication, and historical analysis.
 
 ---
 
@@ -35,7 +35,6 @@ A production-ready Go microservice — and **importable library** — that inges
 - Structured logging with [zerolog](https://github.com/rs/zerolog)
 - Graceful shutdown
 - Embedded [goose](https://github.com/pressly/goose) migrations — run automatically at startup
-- Importable as a Go library with a clean `Server` API
 - Makefile for every common workflow
 
 ---
@@ -74,80 +73,6 @@ make env-copy   # cp .env.example .env
 
 # 3. Run (migrations run automatically on startup)
 make run
-```
-
----
-
-## Using as a Library
-
-Add to your project:
-
-```bash
-go get github.com/tlmanz/scanvault
-```
-
-### Standalone server
-
-```go
-import "github.com/tlmanz/scanvault"
-
-srv, err := scanvault.New(ctx, scanvault.Config{
-    DatabaseURL: "postgres://user:pass@localhost:5432/db?sslmode=disable",
-})
-if err != nil {
-    log.Fatal(err)
-}
-defer srv.Close()
-srv.Start(ctx) // blocks; handles SIGINT/SIGTERM gracefully
-```
-
-Lifecycle notes:
-- `Start(ctx)` blocks until shutdown.
-- `Close()` is safe to call multiple times.
-- When ScanVault creates the pool (from `DatabaseURL`), `Close()` releases it.
-- When using `WithDBPool(pool)`, your application owns that pool and must close it.
-
-### Mount on an existing router
-
-```go
-// Works with net/http, chi, gorilla/mux, echo, etc.
-srv, _ := scanvault.New(ctx, scanvault.Config{DatabaseURL: dsn})
-defer srv.Close()
-mux.Handle("/trivy/", http.StripPrefix("/trivy", srv.Handler()))
-```
-
-### Functional options
-
-```go
-srv, _ := scanvault.New(ctx,
-    scanvault.Config{DatabaseURL: dsn},
-    scanvault.WithPort(9090),
-    scanvault.WithLogLevel("debug"),
-    scanvault.WithLogFormat("console"),
-    scanvault.WithLogger(myZerologLogger),
-)
-```
-
-### Use an existing pgx pool
-
-```go
-pool, _ := pgxpool.New(ctx, dsn)
-
-srv, err := scanvault.New(ctx,
-  scanvault.Config{},
-  scanvault.WithDBPool(pool),
-)
-defer pool.Close()
-```
-
-### Working with results
-
-```go
-import "github.com/tlmanz/scanvault/models"
-
-var scan models.Scan
-json.Unmarshal(responseBody, &scan)
-fmt.Println(scan.ImageName, scan.ImageTag, scan.VulnCritical)
 ```
 
 ---
@@ -545,10 +470,6 @@ Test coverage:
 
 ```
 scanvault/
-├── config.go                       # Public Config struct + applyDefaults + toInternal
-├── server.go                       # Public Server, New(), Handler(), Start()
-├── options.go                      # Functional options (WithLogger, WithPort)
-├── migrate.go                      # Embedded goose migration runner
 ├── models/
 │   ├── scan.go                     # Scan, VulnCounts, VulnerabilitySummary types
 │   └── vulnerability.go            # Vulnerability, TopCVE, AffectedImage, FixableSummary
@@ -559,6 +480,9 @@ scanvault/
 │   ├── handlers/scan_handler.go    # HTTP handlers (uses Store interface)
 │   ├── parser/trivy.go             # Trivy JSON parser (meta + vuln extraction)
 │   ├── repository/scan_repo.go     # PostgreSQL queries + analytics + cleanup
+│   ├── service/server.go           # Service bootstrap + lifecycle
+│   ├── service/migrate.go          # Embedded goose migration runner
+│   ├── service/logger.go           # Logger setup from config
 │   └── worker/cleanup.go           # Background cleanup worker
 ├── migrations/
 │   ├── 001_create_scans.sql        # Base scans table

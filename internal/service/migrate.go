@@ -1,4 +1,4 @@
-package scanvault
+package service
 
 import (
 	"errors"
@@ -30,7 +30,6 @@ func initGoose() error {
 	return nil
 }
 
-// runMigrations runs all pending goose migrations using the embedded SQL FS.
 func runMigrations(pool *pgxpool.Pool) error {
 	if pool == nil {
 		return errors.New("nil database pool")
@@ -45,5 +44,6 @@ func runMigrations(pool *pgxpool.Pool) error {
 	if err := goose.Up(sqlDB, "."); err != nil {
 		return fmt.Errorf("applying migrations: %w", err)
 	}
+
 	return nil
 }

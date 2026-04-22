@@ -1,20 +1,14 @@
-package scanvault
+package service
 
 import (
 	"os"
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/tlmanz/scanvault/internal/config"
 )
 
-// buildLogger constructs a zerolog.Logger from Config.
-// If Config.Logger is set, it is used as-is.
-// Otherwise, a logger is built from LogLevel and LogFormat.
-func buildLogger(cfg Config) zerolog.Logger {
-	if cfg.Logger != nil {
-		return *cfg.Logger
-	}
-
+func buildLogger(cfg *config.Config) zerolog.Logger {
 	level, err := zerolog.ParseLevel(cfg.LogLevel)
 	if err != nil {
 		level = zerolog.InfoLevel
@@ -26,7 +20,6 @@ func buildLogger(cfg Config) zerolog.Logger {
 			zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339},
 		)
 	} else {
-		// json - structured output, suitable for production log aggregators.
 		base = zerolog.New(os.Stderr)
 	}
 
