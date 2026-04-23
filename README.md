@@ -38,13 +38,14 @@ ScanVault is a production-ready Go microservice that ingests [Trivy](https://git
 - `POST /scans` to ingest raw Trivy JSON.
 - Automatically extracts `image_name`, `image_tag`, and `image_digest`.
 - Computes and stores `vuln_critical`, `vuln_high`, `vuln_medium`, `vuln_low`, `vuln_unknown`.
-- Writes individual vulnerability records into `vulnerabilities`.
+- Writes normalized vulnerabilities into a catalog (`vulnerabilities`) and links them via `scan_vulnerabilities`.
 
 ### Querying and Analytics
 
 - Query scans by image, tag, and optional severity.
 - Fetch latest scan per image.
 - Extract filtered vulnerabilities from a specific scan.
+- Response payloads for scan data follow Trivy-style field names, including nested vulnerability details.
 - Summary, trends, top CVEs, CVE-affected images, and fixable vulnerability analytics.
 
 ### Runtime and Operations
@@ -59,10 +60,10 @@ ScanVault is a production-ready Go microservice that ingests [Trivy](https://git
 
 ### Prerequisites
 
-| Tool | Version |
-| --- | --- |
-| [Go](https://go.dev/dl/) | 1.22+ |
-| [Docker](https://docs.docker.com/get-docker/) + Compose | recent |
+| Tool                                                    | Version |
+| ------------------------------------------------------- | ------- |
+| [Go](https://go.dev/dl/)                                | 1.22+   |
+| [Docker](https://docs.docker.com/get-docker/) + Compose | recent  |
 
 ### Run with Docker Compose (recommended)
 
@@ -98,23 +99,24 @@ make run
 
 - Swagger UI: `GET /swagger`
 - OpenAPI JSON (auto-generated): `GET /swagger/openapi.json`
+- The Swagger UI is generated from the REST route metadata and reflects the current request/response contracts.
 
 ### Endpoints
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/health` | Service health check |
-| `POST` | `/scans` | Ingest one Trivy JSON report |
-| `GET` | `/scans?tag=<tag>` | List scans by image tag |
-| `GET` | `/scans?image=<name>[&severity=<level>]` | List scans by image name |
-| `GET` | `/scans/all[?image=&tag=&limit=&offset=]` | Global scan list with optional filters |
-| `GET` | `/scans/{id}/vulnerabilities[?severity=&pkg=]` | Vulnerabilities from one stored scan |
-| `GET` | `/scans/latest?image=<name>` | Most recent scan for an image |
-| `GET` | `/analytics/vulnerabilities/summary` | Totals, severity breakdown, top CVEs |
-| `GET` | `/analytics/vulnerabilities/trends` | Day/week vulnerability trend points |
-| `GET` | `/analytics/vulnerabilities/top-cves` | Top CVEs by affected image count |
-| `GET` | `/analytics/vulnerabilities/cve/:cve_id/images` | Images currently exposed to a CVE |
-| `GET` | `/analytics/vulnerabilities/fixable` | Fixable vs non-fixable vulnerability summary |
+| Method | Path                                            | Purpose                                      |
+| ------ | ----------------------------------------------- | -------------------------------------------- |
+| `GET`  | `/health`                                       | Service health check                         |
+| `POST` | `/scans`                                        | Ingest one Trivy JSON report                 |
+| `GET`  | `/scans?tag=<tag>`                              | List scans by image tag                      |
+| `GET`  | `/scans?image=<name>[&severity=<level>]`        | List scans by image name                     |
+| `GET`  | `/scans/all[?image=&tag=&limit=&offset=]`       | Global scan list with optional filters       |
+| `GET`  | `/scans/{id}/vulnerabilities[?severity=&pkg=]`  | Vulnerabilities from one stored scan         |
+| `GET`  | `/scans/latest?image=<name>`                    | Most recent scan for an image                |
+| `GET`  | `/analytics/vulnerabilities/summary`            | Totals, severity breakdown, top CVEs         |
+| `GET`  | `/analytics/vulnerabilities/trends`             | Day/week vulnerability trend points          |
+| `GET`  | `/analytics/vulnerabilities/top-cves`           | Top CVEs by affected image count             |
+| `GET`  | `/analytics/vulnerabilities/cve/:cve_id/images` | Images currently exposed to a CVE            |
+| `GET`  | `/analytics/vulnerabilities/fixable`            | Fixable vs non-fixable vulnerability summary |
 
 ### Ingest Behavior
 
@@ -172,40 +174,40 @@ Configuration is loaded from env vars (or `.env`) using [goconf](https://github.
 
 ### Required
 
-| Variable | Description |
-| --- | --- |
+| Variable       | Description    |
+| -------------- | -------------- |
 | `DATABASE_URL` | PostgreSQL DSN |
 
 ### HTTP Server
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `SERVER_PORT` | `8080` | Listen port |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `LOG_FORMAT` | `json` | `json` or `console` |
-| `HTTP_READ_TIMEOUT` | `15s` | Request read timeout |
-| `HTTP_WRITE_TIMEOUT` | `15s` | Response write timeout |
-| `HTTP_IDLE_TIMEOUT` | `60s` | Keep-alive idle timeout |
+| Variable             | Default | Description                      |
+| -------------------- | ------- | -------------------------------- |
+| `SERVER_PORT`        | `8080`  | Listen port                      |
+| `LOG_LEVEL`          | `info`  | `debug`, `info`, `warn`, `error` |
+| `LOG_FORMAT`         | `json`  | `json` or `console`              |
+| `HTTP_READ_TIMEOUT`  | `15s`   | Request read timeout             |
+| `HTTP_WRITE_TIMEOUT` | `15s`   | Response write timeout           |
+| `HTTP_IDLE_TIMEOUT`  | `60s`   | Keep-alive idle timeout          |
 
 ### Database Pool
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `DB_MAX_CONNS` | `25` | Max open connections |
-| `DB_MIN_CONNS` | `2` | Min idle connections |
-| `DB_MAX_CONN_LIFETIME` | `30m` | Max connection lifetime |
-| `DB_MAX_CONN_IDLE_TIME` | `5m` | Max idle time |
-| `DB_HEALTH_CHECK_PERIOD` | `1m` | Pool health-check interval |
+| Variable                 | Default | Description                |
+| ------------------------ | ------- | -------------------------- |
+| `DB_MAX_CONNS`           | `25`    | Max open connections       |
+| `DB_MIN_CONNS`           | `2`     | Min idle connections       |
+| `DB_MAX_CONN_LIFETIME`   | `30m`   | Max connection lifetime    |
+| `DB_MAX_CONN_IDLE_TIME`  | `5m`    | Max idle time              |
+| `DB_HEALTH_CHECK_PERIOD` | `1m`    | Pool health-check interval |
 
 ### Cleanup Worker
 
 All cleanup settings are optional.
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `CLEANUP_INTERVAL` | `1h` | Worker run interval |
-| `CLEANUP_MAX_AGE` | `0` | Delete scans older than this duration |
-| `CLEANUP_KEEP_PER_IMAGE` | `0` | Keep only newest N scans per image |
+| Variable                 | Default | Description                           |
+| ------------------------ | ------- | ------------------------------------- |
+| `CLEANUP_INTERVAL`       | `1h`    | Worker run interval                   |
+| `CLEANUP_MAX_AGE`        | `0`     | Delete scans older than this duration |
+| `CLEANUP_KEEP_PER_IMAGE` | `0`     | Keep only newest N scans per image    |
 
 If both `CLEANUP_MAX_AGE` and `CLEANUP_KEEP_PER_IMAGE` are `0`, cleanup is disabled.
 
@@ -213,13 +215,13 @@ If both `CLEANUP_MAX_AGE` and `CLEANUP_KEEP_PER_IMAGE` are `0`, cleanup is disab
 
 The worker applies up to two retention policies. When both are set, a scan is deleted only if it is both older than `CLEANUP_MAX_AGE` and outside the newest `CLEANUP_KEEP_PER_IMAGE` for that image.
 
-| `CLEANUP_MAX_AGE` | `CLEANUP_KEEP_PER_IMAGE` | Result |
-| --- | --- | --- |
-| `72h` | off | Delete scans older than 72 hours |
-| off | `10` | Keep latest 10 scans per image |
-| `72h` | `10` | Delete only scans that match both rules |
+| `CLEANUP_MAX_AGE` | `CLEANUP_KEEP_PER_IMAGE` | Result                                  |
+| ----------------- | ------------------------ | --------------------------------------- |
+| `72h`             | off                      | Delete scans older than 72 hours        |
+| off               | `10`                     | Keep latest 10 scans per image          |
+| `72h`             | `10`                     | Delete only scans that match both rules |
 
-`vulnerabilities` rows are deleted automatically with their parent scan via `ON DELETE CASCADE`.
+`scan_vulnerabilities` rows are deleted automatically with their parent scan via `ON DELETE CASCADE`.
 
 ## Development
 
@@ -324,26 +326,31 @@ CREATE UNIQUE INDEX idx_scans_image_digest_unique ON scans(image_name, image_dig
     WHERE image_digest != '';
 
 CREATE TABLE vulnerabilities (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scan_id       UUID NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
-    cve_id        TEXT NOT NULL,
-    pkg_name      TEXT NOT NULL,
-    pkg_version   TEXT NOT NULL DEFAULT '',
-    fixed_version TEXT NOT NULL DEFAULT '',
-    severity      TEXT NOT NULL,
-    title         TEXT NOT NULL DEFAULT '',
-    UNIQUE (scan_id, cve_id, pkg_name)
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cve_id      TEXT NOT NULL,
+    pkg_name    TEXT NOT NULL,
+    pkg_version TEXT NOT NULL DEFAULT '',
+    UNIQUE (cve_id, pkg_name, pkg_version)
+);
+
+CREATE TABLE scan_vulnerabilities (
+    scan_id          UUID NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    vulnerability_id UUID NOT NULL REFERENCES vulnerabilities(id) ON DELETE CASCADE,
+    severity         TEXT NOT NULL,
+    fixed_version    TEXT NOT NULL DEFAULT '',
+    title            TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (scan_id, vulnerability_id)
 );
 ```
 
 ## Tech Stack
 
-| Layer | Library |
-| --- | --- |
-| HTTP | [Gin](https://github.com/gin-gonic/gin) |
-| Database | [pgx/v5](https://github.com/jackc/pgx) |
-| Migrations | [goose/v3](https://github.com/pressly/goose) |
-| Config | [goconf](https://github.com/tlmanz/goconf) + [caarlos0/env](https://github.com/caarlos0/env) |
-| Logging | [zerolog](https://github.com/rs/zerolog) |
-| Tests | [testcontainers-go](https://github.com/testcontainers/testcontainers-go) |
-| Runtime | [distroless/static](https://github.com/GoogleContainerTools/distroless) |
+| Layer      | Library                                                                                      |
+| ---------- | -------------------------------------------------------------------------------------------- |
+| HTTP       | [Gin](https://github.com/gin-gonic/gin)                                                      |
+| Database   | [pgx/v5](https://github.com/jackc/pgx)                                                       |
+| Migrations | [goose/v3](https://github.com/pressly/goose)                                                 |
+| Config     | [goconf](https://github.com/tlmanz/goconf) + [caarlos0/env](https://github.com/caarlos0/env) |
+| Logging    | [zerolog](https://github.com/rs/zerolog)                                                     |
+| Tests      | [testcontainers-go](https://github.com/testcontainers/testcontainers-go)                     |
+| Runtime    | [distroless/static](https://github.com/GoogleContainerTools/distroless)                      |
