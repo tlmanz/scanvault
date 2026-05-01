@@ -3,7 +3,7 @@ module github.com/tlmanz/scanvault
 go 1.25.0
 
 require (
-	github.com/caarlos0/env/v11 v11.4.0
+	github.com/caarlos0/env/v11 v11.4.1
 	github.com/distribution/reference v0.6.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-fuego/fuego v0.19.0
